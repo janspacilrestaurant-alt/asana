@@ -2569,6 +2569,7 @@ function loadBackups(){
   if(!IS_GAS){ el.innerHTML='<div class="empty">Zálohy jsou jen v nasazené verzi.</div>'; return; }
   el.innerHTML='<div class="skel" style="height:36px"></div>';
   srv("listBackups",[],rows=>{
+    if(rows&&rows.error){ el.innerHTML='<div class="empty">'+esc(rows.error)+'</div>'; return; }
     if(!rows.length){ el.innerHTML='<div class="empty">Zatím žádné zálohy.</div>'; return; }
     el.innerHTML=rows.map(r=>'<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)">'+
       '<span class="mono" style="font-size:11px;flex:1">'+esc(String(r.ts).slice(0,16).replace("T"," "))+'</span>'+
@@ -2589,6 +2590,7 @@ function loadAudit(){
   if(!IS_GAS){ el.innerHTML='<div class="empty">Historie je jen v nasazené verzi.</div>'; return; }
   el.innerHTML='<div class="skel" style="height:36px;margin:10px"></div>';
   srv("readAudit",[150],rows=>{
+    if(rows&&rows.error){ el.innerHTML='<div class="empty">'+esc(rows.error)+'</div>'; return; }
     if(!rows.length){ el.innerHTML='<div class="empty">Historie je prázdná.</div>'; return; }
     el.innerHTML='<table><thead><tr><th>Kdy</th><th>Kdo</th><th>Akce</th><th>Objekt</th></tr></thead><tbody>'+
       rows.map(r=>'<tr><td class="mono" style="font-size:10.5px">'+esc(String(r.ts).slice(5,16).replace("T"," "))+'</td>'+

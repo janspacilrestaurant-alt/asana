@@ -177,6 +177,7 @@ function backupCurrent_() {
 }
 
 function listBackups() {
+  if (!canWrite_()) return { error: "Zálohy vidí jen editor/owner." };
   var sh = sheet_(SH_BACKUP, true);
   var last = sh.getLastRow();
   if (last < 1) return [];
@@ -385,6 +386,7 @@ function logAudit(action, objType, objName, detail) {
 }
 
 function readAudit(limit) {
+  if (!canWrite_()) return { error: "Historii změn vidí jen editor/owner." };
   var sh = sheet_(SH_AUDIT, true);
   var last = sh.getLastRow();
   if (last < 1) return [];
@@ -512,6 +514,7 @@ function fetchTranscriptDoc(fileId) {
 
 /* ---------- INBOX FRONTA ---------- */
 function fetchAndClearInbox() {
+  if (!canWrite_()) return [];   // fronta se čistí = zápis; viewer nesmí
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(LOCK_MS)) return [];
   try {
@@ -566,6 +569,9 @@ function seenAppend_(source, ids) {
 
 /* ---------- SCAN ZDROJŮ (trigger každých 30 min) ---------- */
 function scanSourcesSilently() {
+  // Přes UI smí skenovat jen editor/owner (skeny berou kvótu a čtou Gmail/Drive).
+  // Časový trigger běží pod identitou ownera (stejná Workspace doména), takže projde.
+  if (!canWrite_()) return { found: 0, error: "Nemáš právo skenovat (role viewer)." };
   var s = readSettings_();
   var found = [];
   if (s.meetScan !== "off") {
@@ -704,6 +710,7 @@ function fetchChatMessages(spaceName, sinceIso) {
 
 /* ---------- TÝDENNÍ REPORT ---------- */
 function sendWeeklyReport(to, subject) {
+  if (!canWrite_()) return { error: "Report smí odeslat jen editor/owner (role viewer)." };
   if (!to || String(to).indexOf("@") < 0) return { error: "Zadej platný e-mail." };
   var st;
   try { st = JSON.parse(readStateRaw_() || "{}"); } catch (err) { return { error: "Stav se nepodařilo přečíst." }; }
@@ -756,6 +763,8 @@ function digestSheet_() {
 }
 
 function sendDailyDigest() {
+  // Trigger běží jako owner (stejná doména); přes UI jen editor/owner.
+  if (!canWrite_()) return "Digest smí odeslat jen editor/owner (role viewer).";
   var st;
   try { st = JSON.parse(readStateRaw_() || "{}"); } catch (err) { return "Stav se nepodařilo přečíst."; }
   var sh = digestSheet_();
@@ -1230,6 +1239,8 @@ function testAll() {
 }
 
 function pushIssuesToTasks() {
+  // Zápis do Google Tasks; přes UI jen editor/owner. Trigger běží jako owner.
+  if (!canWrite_()) return { error: "Do Tasks smí posílat jen editor/owner (role viewer)." };
   var st;
   try { st = JSON.parse(readStateRaw_() || "{}"); }
   catch (err) { return { error: "Stav se nepodařilo přečíst." }; }
@@ -1553,6 +1564,7 @@ function setupPmHub() {
 }
 
 function installTriggers() {
+  if (!isOwner_()) return "Automatizaci může měnit jen owner.";
   removeTriggers();
   ScriptApp.newTrigger("scanSourcesSilently").timeBased().everyMinutes(30).create();
   ScriptApp.newTrigger("sendDailyDigest").timeBased().atHour(7).everyDays(1).create();
@@ -1560,6 +1572,7 @@ function installTriggers() {
 }
 
 function removeTriggers() {
+  if (!isOwner_()) return "Automatizaci může měnit jen owner.";
   var n = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); n++; });
   return "Triggery vypnuty (" + n + ")";
