@@ -4,6 +4,41 @@ Formát: nejnovější nahoře. Datumy YYYY-MM-DD.
 
 ## [nevydáno]
 
+### Plánovací engine (B2) — tři opravy z `ANALYSIS.md`
+- **`today()` vracelo UTC datum**, zatímco `addDays`/`dayDiff` kotví na lokální poledne.
+  V CET mezi půlnocí a 1:00/2:00 hlásil Hub „dnes" = včerejšek a úkoly se tvářily
+  po termínu. Nově `isoOf(new Date())` — lokální datum. *(P1)*
+- **Cykly ve vazbách** se dřív jen tiše utnuly po 80 průchodech a zanechaly
+  nekonzistentní datumy. Nově `wouldCycle()` vazbu tvořící kruh **nedovolí**
+  (tažení kolečka i „Zřetězit FS") a řekne proč; `cycleIds()` je umí označit. *(P1)*
+- **CPM počítalo slack proti globálnímu konci přes všechny projekty** — krátký
+  nezávislý projekt tak zdědil rezervu z cizího a „kritická cesta" nedávala smysl.
+  Nově se konec plánu počítá **per souvislou komponentu** grafu vazeb. *(P1)*
+
+### Nástroje (B7)
+- `npm test` — 23 testů proti **reálnému** `index.html` v jsdom (kalendář, ISO týdny
+  včetně přelomu roku, české termíny, CPM, auto-scheduling přes víkend, dedup,
+  cykly, Dashboard, Poznámky → TSV).
+- `npm run fixtures` — deterministický generátor 50/500/2000 úkolů.
+- `npm run perf` — **změřený** render plánu (medián z 3 běhů, jsdom):
+
+  | úkolů | render | DOM uzlů | ms/úkol |
+  | --- | --- | --- | --- |
+  | 50 | 126 ms | 2 573 | 2.52 |
+  | 500 | 1,3 s | 25 323 | 2.69 |
+  | 2 000 | 5,2 s | 101 313 | 2.61 |
+
+  Render je **lineární**, ale 101 tisíc uzlů na 2 000 úkolů potvrzuje, že
+  virtualizace (B1) je nutnost. jsdom je 3–10× pomalejší než Chrome a neměří
+  layout/paint → čísla ber jako relativní, ne absolutní.
+
+### Dokumentace
+- `DEPLOY.md`: doplněn skutečný obsah `appsscript.json` (`executeAs: USER_ACCESSING`,
+  `access: MYSELF`) včetně důsledků pro sdílení a triggery; varování o pozičním
+  mapování listu `PLAN` **zrušeno** — `planMigrate_` mapuje podle názvů sloupců.
+
+## [dřívější v této větvi]
+
 ### Bezpečnost (P0) — serverová autorizace v `Code.gs`
 Do backendu doplněny chybějící role-checky. Dřív mohl kterýkoli autentizovaný uživatel
 tenantu (i `viewer`) volat citlivé/zapisující endpointy přímo přes `google.script.run`;

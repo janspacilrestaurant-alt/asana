@@ -40,11 +40,22 @@ Vše zůstává uvnitř Workspace tenantu Valeo — žádná 3. strana, žádné
 5. **(volitelně) Gemini** — viz §5.
 
 6. **Nasaď web-appku:** *Deploy → New deployment → typ **Web app***.
-   - **Execute as:** *Me* (owner) — aby appka měla přístup ke sdílenému Sheetu.
-   - **Who has access:** **jen doména Valeo** (ne „Anyone"). Důvod: `doGet?action=projects`
-     vrací názvy projektů a `doPost` (Meet Catcher) přijímá data — při „Anyone" jsou otevřené.
-     `⚠ appsscript.json` (finální kontrola web-app access patří do něj).
+
+   Aktuální `appsscript.json` má:
+   ```json
+   "webapp": { "executeAs": "USER_ACCESSING", "access": "MYSELF" }
+   ```
+   - **`executeAs: USER_ACCESSING`** — skript běží pod identitou přihlášeného. Díky tomu
+     role-guardy v `Code.gs` fungují správně (každý vidí svá práva).
+     **Důsledek:** Drive/Gmail/Kalendář se čtou z účtu toho, kdo je zrovna přihlášený.
+   - **`access: MYSELF`** — appku vidíš **jen ty**. Než ji dáš týmu, přepni na
+     **doménu Valeo** (ne „Anyone" — `doGet?action=projects` vrací názvy projektů
+     a `doPost` přijímá data bez autentizace).
    - Zkopíruj **web-app URL** — to je odkaz, který dáš uživatelům.
+
+   > **Pozor u triggerů:** časové triggery běží pod identitou toho, kdo je založil.
+   > Sken tedy čte Drive/Gmail ownera, ne přihlášeného uživatele. Digest se odesílá
+   > jeho jménem. Při sdílení s týmem s tím počítej.
 
 7. Otevři URL, přihlaš se, odklikni consent. Hotovo.
 
@@ -135,8 +146,10 @@ Klíčová slova projektu: *Nastavení → Klíčová slova projektu* (bez nich 
 
 - **Nastavení:** nové klíče se doplní automaticky (`settingsSheet_` gap-fill) — nic neděláš.
 - **Starý datový model** (`tasks`/`actions`) se převede na `issues` při načtení (`migrate()`).
-- **List `PLAN`:** ⚠ `planPull` mapuje sloupce **POZIČNĚ** (ne podle názvu). **Nepřehazuj
-  pořadí sloupců** v listu PLAN, jinak se sync rozbije. (Oprava = položka v `ANALYSIS.md` §4.)
+- **List `PLAN`:** migruje se sám. `planMigrate_` porovná hlavičku s `PLAN_HEAD` a při
+  neshodě **přemapuje data podle NÁZVŮ sloupců** (ne podle pořadí), takže starší list
+  s 20 sloupci se doplní o `Poznámky` bez ztráty dat. Migrace se zapíše do `_audit`
+  jako `planMigrate`. Sloupce v listu můžeš přehazovat.
 - **Mirror listy `Projects`/`Issues`** se při každém uložení přepisují celé — needituj je ručně.
 
 ---
@@ -166,9 +179,12 @@ Klíčová slova projektu: *Nastavení → Klíčová slova projektu* (bez nich 
 ## 11. Rychlý checklist před vydáním
 
 - [ ] `npm run check` prošel (oba `<script>` bloky + `Code.gs`).
+- [ ] `npm test` zelený (engine testy proti reálnému `index.html`).
 - [ ] HTML soubor se v editoru jmenuje přesně `index`.
 - [ ] `Code.gs` vložen.
 - [ ] **Nová verze deploymentu** vydána (ne jen uloženo).
-- [ ] Web-app access = doména Valeo.
+- [ ] Web-app access = doména Valeo (až budeš sdílet; teď `MYSELF`).
 - [ ] (poprvé) `setupPmHub()` proběhl, jsi owner.
-- [ ] Smoke test: otevřít URL, `testAll()` bez chyb, jako viewer ověřit odmítnutí zápisu.
+- [ ] Smoke test: otevřít URL, `testAll()` a `testPlan()` bez chyb.
+- [ ] Smoke test UI: Dashboard se vykreslí, Plán jde otevřít, Sync s Sheetem projde.
+- [ ] Jako viewer ověřit, že „Poslat report" a zápis do plánu server odmítne.
