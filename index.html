@@ -862,7 +862,10 @@ function srvP(fn){
 let _seq=0;
 function uid(){ return Date.now().toString(36)+(_seq++).toString(36)+Math.random().toString(36).slice(2,6); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
-function today(){ return new Date().toISOString().slice(0,10); }
+/* Lokální datum, ne UTC. toISOString() vrací UTC, takže v CET mezi půlnocí
+   a 1:00/2:00 hlásil „dnes" včerejšek — a issues se tvářily po termínu.
+   Zbytek appky (addDays/dayDiff) kotví na lokální poledne, tohle to srovnává. */
+function today(){ return isoOf(new Date()); }
 function addDays(iso,n){ const d=new Date(iso+"T12:00:00"); d.setDate(d.getDate()+n); return isoOf(d); }
 function isoOf(d){ return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
 function dayDiff(a,b){ return Math.round((new Date(b+"T12:00:00")-new Date(a+"T12:00:00"))/864e5); }
@@ -3438,6 +3441,47 @@ boot();
   }
 
   /* ---------- plánovací engine ---------- */
+
+  /** Vznikl by cyklus, kdyby "succId" dostal předchůdce "predId"?
+   *  DFS po hranách dep → predecessor. Cyklus = z predId se dá dojít zpět na succId. */
+  function wouldCycle(succId, predId) {
+    if (succId === predId) return true;
+    var byId2 = {};
+    state.projects.forEach(function (p) {
+      (p.issues || []).forEach(function (i) { byId2[i.id] = i; });
+    });
+    var seen = {}, stack = [predId];
+    while (stack.length) {
+      var cur = stack.pop();
+      if (cur === succId) return true;
+      if (seen[cur]) continue;
+      seen[cur] = 1;
+      var node = byId2[cur];
+      if (node && node.deps) node.deps.forEach(function (d) { if (d.id) stack.push(d.id); });
+    }
+    return false;
+  }
+
+  /** Vazby, které tvoří cyklus — vrátí seznam id, ať je render umí označit. */
+  function cycleIds(list) {
+    var map = {}, out = {};
+    list.forEach(function (a) { map[a.id] = a; });
+    var state2 = {};   // 0 = nenavštíveno, 1 = na zásobníku, 2 = hotovo
+    function dfs(id) {
+      if (state2[id] === 1) { out[id] = 1; return true; }
+      if (state2[id] === 2) return false;
+      state2[id] = 1;
+      var n = map[id], hit = false;
+      if (n && n.deps) n.deps.forEach(function (d) {
+        if (map[d.id] && dfs(d.id)) { out[id] = 1; hit = true; }
+      });
+      state2[id] = 2;
+      return hit;
+    }
+    list.forEach(function (a) { dfs(a.id); });
+    return out;
+  }
+
   function autoSchedule(list) {
     var c = cfg(), map = {};
     list.forEach(function (a) { map[a.id] = a; });
@@ -3468,8 +3512,40 @@ boot();
         (succ[d.id] = succ[d.id] || []).push({ s: a.id, type: d.type || "FS", lag: +d.lag || 0 });
       });
     });
-    var end = list.length ? Math.max.apply(null, list.map(function (a) { return dn(a.due); })) : 0;
-    list.forEach(function (a) { var r = res[a.id]; r.lf = end; r.ls = end - (r.ef - r.es); });
+
+    /* Konec plánu se bere PER SOUVISLOU KOMPONENTU grafu vazeb, ne globálně.
+       Dřív dominoval nejzazší termín napříč všemi projekty, takže krátký
+       nezávislý projekt dostal obří slack a kritická cesta byla nesmysl. */
+    var comp = {}, adj = {};
+    list.forEach(function (a) { adj[a.id] = adj[a.id] || []; });
+    list.forEach(function (a) {
+      (a.deps || []).forEach(function (d) {
+        if (!res[d.id]) return;
+        adj[a.id].push(d.id);
+        (adj[d.id] = adj[d.id] || []).push(a.id);
+      });
+    });
+    var cn = 0;
+    list.forEach(function (a) {
+      if (comp[a.id] !== undefined) return;
+      cn++;
+      var stack = [a.id];
+      while (stack.length) {
+        var cur = stack.pop();
+        if (comp[cur] !== undefined) continue;
+        comp[cur] = cn;
+        (adj[cur] || []).forEach(function (x) { if (comp[x] === undefined) stack.push(x); });
+      }
+    });
+    var compEnd = {};
+    list.forEach(function (a) {
+      var c2 = comp[a.id], e3 = dn(a.due);
+      if (compEnd[c2] === undefined || e3 > compEnd[c2]) compEnd[c2] = e3;
+    });
+    list.forEach(function (a) {
+      var r = res[a.id], end = compEnd[comp[a.id]];
+      r.lf = end; r.ls = end - (r.ef - r.es);
+    });
     for (var pass = 0; pass < 80; pass++) {
       var ch = false;
       list.forEach(function (a) {
@@ -4275,6 +4351,11 @@ boot();
         var t2 = tgt && tgt.closest(".plbar,.plms");
         var b = t2 && byId(t2.dataset.id);
         if (b && b.id !== D.i.id) {
+          if (wouldCycle(b.id, D.i.id)) {
+            toast("Vazba by vytvořila kruh (" + String(D.i.title).slice(0, 18) + " → " +
+              String(b.title).slice(0, 18) + "). Plán by se nedal spočítat.", true);
+            render(); return;
+          }
           snap("vazba");
           b.deps = b.deps || [];
           if (!b.deps.some(function (d) { return d.id === D.i.id; })) {
@@ -4440,11 +4521,16 @@ boot();
     var ids = lastList.filter(function (i) { return sel.has(i.id); }).map(function (i) { return i.id; });
     if (ids.length < 2) return toast("Vyber aspoň dva úkoly", true);
     snap("zřetězení");
+    var linked = 0, skipped = 0;
     for (var k = 1; k < ids.length; k++) {
       var b = byId(ids[k]); b.deps = b.deps || [];
-      if (!b.deps.some(function (d) { return d.id === ids[k - 1]; })) b.deps.push({ id: ids[k - 1], type: "FS", lag: 0 });
+      if (b.deps.some(function (d) { return d.id === ids[k - 1]; })) continue;
+      if (wouldCycle(ids[k], ids[k - 1])) { skipped++; continue; }
+      b.deps.push({ id: ids[k - 1], type: "FS", lag: 0 });
+      linked++;
     }
-    save(); render(); toast("Zřetězeno " + ids.length + " úkolů vazbou FS");
+    save(); render();
+    toast("Zřetězeno " + linked + " vazeb FS" + (skipped ? " · " + skipped + " přeskočeno (kruh)" : ""), !!skipped);
   };
   PL.ms = function (id) {
     var i = byId(id); if (!i || !canEdit()) return;
@@ -5396,7 +5482,8 @@ boot();
   // jen zpřístupní jinak privátní kalendář/CPM pro unit testy v jsdom.
   PL._test = { dn: dn, nd: nd, wd: wd, isFree: isFree, nextWork: nextWork,
     isoWeek: isoWeek, workDays: workDays, cpm: cpm, autoSchedule: autoSchedule,
-    depOk: depOk, overload: overload, norm: norm };
+    depOk: depOk, overload: overload, norm: norm,
+    cycleIds: cycleIds, wouldCycle: wouldCycle, allPlan: allPlan, rows: rows };
 
   window.PL = PL;
   window.renderGantt = render;

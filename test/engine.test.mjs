@@ -72,13 +72,27 @@ test("cpm — FS řetězec: oba úkoly kritické, slack 0", () => {
   assert.equal(res.B.slack, 0);
 });
 
-test("cpm — paralelní úkol s rezervou není kritický", () => {
+test("cpm — paralelní větev s rezervou uvnitř téže sítě není kritická", () => {
   const A = { id: "A", from: "2026-01-05", due: "2026-01-06", deps: [] };
   const B = { id: "B", from: "2026-01-07", due: "2026-01-08", deps: [{ id: "A", type: "FS", lag: 0 }] };
-  const C = { id: "C", from: "2026-01-05", due: "2026-01-05", deps: [] }; // krátký, konec je dál
+  // C visí na A taky, ale je kratší → uvnitř komponenty má rezervu
+  const C = { id: "C", from: "2026-01-07", due: "2026-01-07", deps: [{ id: "A", type: "FS", lag: 0 }] };
   const res = PLt.cpm([A, B, C]);
-  assert.equal(res.C.crit, false);
+  assert.equal(res.B.crit, true, "delší větev je kritická");
+  assert.equal(res.C.crit, false, "kratší větev má rezervu");
   assert.ok(res.C.slack > 0, "C má mít kladný slack");
+});
+
+test("cpm — nezávislé projekty se navzájem neovlivňují (per komponenta)", () => {
+  // Projekt 1: dlouhý řetěz končící pozdě
+  const A = { id: "A", from: "2026-01-05", due: "2026-01-06", deps: [] };
+  const B = { id: "B", from: "2026-01-07", due: "2026-03-31", deps: [{ id: "A", type: "FS", lag: 0 }] };
+  // Projekt 2: krátký, ZCELA nezávislý — nesmí dostat rezervu z cizího projektu
+  const X = { id: "X", from: "2026-01-05", due: "2026-01-06", deps: [] };
+  const Y = { id: "Y", from: "2026-01-07", due: "2026-01-08", deps: [{ id: "X", type: "FS", lag: 0 }] };
+  const res = PLt.cpm([A, B, X, Y]);
+  assert.equal(res.Y.crit, true, "konec 2. projektu je kritický ve své komponentě");
+  assert.equal(res.Y.slack, 0, "slack se nesmí počítat proti cizímu projektu");
 });
 
 /* ============================================================
@@ -148,4 +162,84 @@ test("extractIssues — závazek v 1. osobě získá mluvčího a termín", () =
   const hit = issues.find(i => i.responsible === "Martin Kander");
   assert.ok(hit, "závazek v 1. osobě má mít odpovědného = mluvčí");
   assert.equal(hit.due, "2026-01-09"); // „do pátku" z Po 2026-01-05 → Pá
+});
+
+/* ============================================================
+   DATUM — lokální vs UTC (oprava P1 z ANALYSIS.md §3)
+   ============================================================ */
+test("today() vrací LOKÁLNÍ datum, ne UTC", () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const local = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  assert.equal(w.today(), local);
+});
+
+test("today() je konzistentní s addDays/dayDiff", () => {
+  assert.equal(w.addDays(w.today(), 0), w.today());
+  assert.equal(w.dayDiff(w.today(), w.today()), 0);
+  assert.equal(w.dayDiff(w.today(), w.addDays(w.today(), 5)), 5);
+  assert.equal(w.dayDiff(w.today(), w.addDays(w.today(), -3)), -3);
+});
+
+/* ============================================================
+   DETEKCE CYKLŮ (nová ochrana plánovacího enginu)
+   ============================================================ */
+test("cycleIds — najde kruh A→B→A a označí obě strany", () => {
+  const A = { id: "A", from: "2026-01-05", due: "2026-01-06", deps: [{ id: "B", type: "FS", lag: 0 }] };
+  const B = { id: "B", from: "2026-01-07", due: "2026-01-08", deps: [{ id: "A", type: "FS", lag: 0 }] };
+  const cyc = PLt.cycleIds([A, B]);
+  assert.ok(cyc.A || cyc.B, "kruh musí být detekován");
+});
+
+test("cycleIds — zdravý FS řetěz není označen jako kruh", () => {
+  const A = { id: "A", from: "2026-01-05", due: "2026-01-06", deps: [] };
+  const B = { id: "B", from: "2026-01-07", due: "2026-01-08", deps: [{ id: "A", type: "FS", lag: 0 }] };
+  const C = { id: "C", from: "2026-01-09", due: "2026-01-12", deps: [{ id: "B", type: "FS", lag: 0 }] };
+  const cyc = PLt.cycleIds([A, B, C]);
+  assert.equal(Object.keys(cyc).length, 0);
+});
+
+/* ============================================================
+   DASHBOARD (integrace nad demo daty)
+   ============================================================ */
+test("Dashboard se vykreslí z demo dat a je proklikatelný", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  w2.go("dash");
+  const body = w2.document.getElementById("dashBody");
+  assert.ok(body, "dashBody musí existovat");
+  assert.ok(body.querySelectorAll(".dk").length >= 8, "aspoň 8 KPI dlaždic");
+  assert.ok(body.querySelectorAll("svg.dchart").length >= 3, "aspoň 3 grafy");
+  // navigace má Dashboard jako první položku
+  const nav = [...w2.document.querySelectorAll("aside .nav-btn")].map((b) => b.dataset.v);
+  assert.equal(nav[0], "dash");
+});
+
+test("Poznámky u úkolu projdou do TSV exportu pro Sheets", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  // state je uvnitř skriptu (let), takže na úkoly sáhneme přes engine export
+  const plan = w2.PL._test.allPlan();
+  assert.ok(plan.length, "demo musí mít úkoly");
+  plan[0].notes = "4.8.2026 · Jan Spacil: první zápis";
+
+  const tsv = w2.PL.tsv();
+  const head = tsv.split("\n")[0].split("\t");
+  assert.ok(head.includes("Poznámky"), "hlavička TSV má sloupec Poznámky");
+  assert.match(tsv, /Jan Spacil: první zápis/, "poznámka je v exportu");
+  // víceřádková poznámka se do jedné buňky serializuje značkou ⏎
+  plan[0].notes = "první řádek\ndruhý řádek";
+  assert.match(w2.PL.tsv(), /první řádek ⏎ druhý řádek/);
+});
+
+test("wouldCycle — zabrání vazbě, která uzavře kruh", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  const plan = w2.PL._test.allPlan();
+  const a = plan[0], b = plan[1];
+  b.deps = [{ id: a.id, type: "FS", lag: 0 }];       // b závisí na a
+  assert.equal(w2.PL._test.wouldCycle(a.id, b.id), true, "a→b by uzavřelo kruh");
+  assert.equal(w2.PL._test.wouldCycle(a.id, a.id), true, "vazba sám na sebe");
+  const c = plan[2];
+  assert.equal(w2.PL._test.wouldCycle(c.id, a.id), false, "nezávislá vazba je v pořádku");
 });
