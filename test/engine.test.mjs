@@ -243,3 +243,136 @@ test("wouldCycle — zabrání vazbě, která uzavře kruh", () => {
   const c = plan[2];
   assert.equal(w2.PL._test.wouldCycle(c.id, a.id), false, "nezávislá vazba je v pořádku");
 });
+
+/* ============================================================
+   SVÁTKY ČR + ZÁVODNÍ ODSTÁVKY
+   ============================================================ */
+test("easterSunday — proti známým datům Velikonoční neděle", () => {
+  const iso = (n) => PLt.nd(n);
+  assert.equal(iso(PLt.easterSunday(2024)), "2024-03-31");
+  assert.equal(iso(PLt.easterSunday(2025)), "2025-04-20");
+  assert.equal(iso(PLt.easterSunday(2026)), "2026-04-05");
+  assert.equal(iso(PLt.easterSunday(2027)), "2027-03-28");
+});
+
+test("czHolidays — pevné i pohyblivé svátky 2026", () => {
+  const h = PLt.czHolidays(2026);
+  const at = (isoStr) => h[PLt.dn(isoStr)];
+  assert.equal(at("2026-01-01"), "Nový rok");
+  assert.equal(at("2026-05-08"), "Den vítězství");
+  assert.equal(at("2026-07-05"), "Cyril a Metoděj");
+  assert.equal(at("2026-11-17"), "Boj za svobodu a demokracii");
+  assert.equal(at("2026-12-25"), "1. svátek vánoční");
+  // Velikonoce 2026: neděle 5.4. → Velký pátek 3.4., pondělí 6.4.
+  assert.equal(at("2026-04-03"), "Velký pátek");
+  assert.equal(at("2026-04-06"), "Velikonoční pondělí");
+  assert.equal(at("2026-04-07"), undefined, "úterý po Velikonocích je pracovní");
+});
+
+test("isFree — svátek je nepracovní, workDays ho nepočítá", () => {
+  PLt.cfg().hol = true;
+  // 1.5.2026 je pátek + Svátek práce
+  assert.equal(PLt.isWknd(PLt.dn("2026-05-01")), false, "je to pátek");
+  assert.equal(PLt.isFree(PLt.dn("2026-05-01")), true, "ale svátek");
+  assert.equal(PLt.freeWhy(PLt.dn("2026-05-01")), "Svátek práce");
+  // Po–Pá s jedním svátkem = 4 pracovní dny místo 5
+  assert.equal(PLt.workDays("2026-04-27", "2026-05-01"), 4);
+});
+
+test("nextWork přeskočí svátek i navazující víkend", () => {
+  PLt.cfg().hol = true;
+  // čtvrtek 2026-04-02 → pátek je Velký pátek, So/Ne, Po Velikonoční
+  // → nejbližší pracovní je úterý 7.4.
+  assert.equal(PLt.nd(PLt.nextWork(PLt.dn("2026-04-03"))), "2026-04-07");
+});
+
+test("svátky lze vypnout přepínačem", () => {
+  PLt.cfg().hol = false;
+  assert.equal(PLt.isFree(PLt.dn("2026-05-01")), false, "vypnuto → pátek je pracovní");
+  assert.equal(PLt.workDays("2026-04-27", "2026-05-01"), 5);
+  PLt.cfg().hol = true;                     // vrátit pro další testy
+});
+
+test("závodní odstávka se chová jako nepracovní doba", () => {
+  const c = PLt.cfg();
+  c.shut = [{ name: "Celozávodní dovolená", from: "2026-07-06", due: "2026-07-17" }];
+  assert.equal(PLt.isFree(PLt.dn("2026-07-08")), true, "středa uprostřed odstávky");
+  assert.equal(PLt.shutName(PLt.dn("2026-07-08")), "Celozávodní dovolená");
+  assert.equal(PLt.isFree(PLt.dn("2026-07-20")), false, "pondělí po odstávce se pracuje");
+  // autoSchedule musí odstávku přeskočit
+  const A = { id: "A", from: "2026-07-01", due: "2026-07-03", deps: [] };
+  const B = { id: "B", from: "2026-07-01", due: "2026-07-01", deps: [{ id: "A", type: "FS", lag: 0 }] };
+  PLt.autoSchedule([A, B]);
+  assert.equal(B.from, "2026-07-20", "následník skočí až za odstávku");
+  c.shut = [];
+});
+
+/* ============================================================
+   VERZOVANÉ BASELINE
+   ============================================================ */
+test("baseline — více verzí vedle sebe, diff proti vybrané", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  const T = w2.PL._test;
+  const c = T.cfg();
+  c.bl = []; c.blActive = "";
+
+  const id0 = T.blSave("B0 — výchozí");
+  assert.equal(id0, "B0");
+  assert.equal(c.bl.length, 1);
+
+  // posuň jeden úkol o 5 dní a ulož druhou baseline
+  const plan = T.allPlan();
+  const target = plan[0];
+  const origDue = target.due;
+  target.due = T.nd(T.dn(origDue) + 5);
+
+  const d0 = T.blDiff("B0");
+  assert.equal(d0.moved.length, 1, "proti B0 se posunul jeden úkol");
+  assert.equal(d0.moved[0].slip, 5);
+  assert.equal(d0.sumSlip, 5);
+
+  const id1 = T.blSave("B1 — po G2");
+  assert.equal(id1, "B1");
+  assert.equal(c.bl.length, 2, "B0 zůstala zachovaná");
+
+  // proti B1 už nic neposunuto, proti B0 pořád ano
+  assert.equal(T.blDiff("B1").moved.length, 0);
+  assert.equal(T.blDiff("B0").moved.length, 1, "starší baseline se nepřepsala");
+});
+
+test("baseline — přepnutí aktivní verze mění, proti čemu se počítá slip", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  const T = w2.PL._test;
+  T.cfg().bl = []; T.cfg().blActive = "";
+  T.blSave("B0");
+  const it = T.allPlan()[0];
+  const due0 = it.due;
+  it.due = T.nd(T.dn(due0) + 3);
+  T.blSave("B1");
+
+  T.blActivate("B0");
+  assert.equal(T.baseOf(it).due, due0, "proti B0 je základ původní termín");
+  T.blActivate("B1");
+  assert.equal(T.baseOf(it).due, it.due, "proti B1 je základ nový termín");
+});
+
+test("baseline — migrace staré jediné baseFrom/baseDue na B0", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  const T = w2.PL._test;
+  T.cfg().bl = []; T.cfg().blActive = "";
+  // simuluj starý stav: jen baseFrom/baseDue, žádné i.bl
+  const plan = T.allPlan();
+  plan.forEach((i) => { delete i.bl; });
+  plan[0].baseFrom = "2026-01-05"; plan[0].baseDue = "2026-01-09";
+
+  T.blMigrate();
+  assert.equal(T.cfg().bl.length, 1, "vznikla jedna verze");
+  assert.equal(T.cfg().bl[0].id, "B0");
+  assert.equal(T.cfg().blActive, "B0");
+  // pozn. objekt vzniká v jsdom realmu → deepStrictEqual by selhal na prototypu
+  assert.equal(plan[0].bl.B0.f, "2026-01-05");
+  assert.equal(plan[0].bl.B0.d, "2026-01-09");
+});

@@ -3203,6 +3203,10 @@ boot();
     if (c.tools === undefined) c.tools = false;
     if (c.det === undefined) c.det = false;
     if (c.dense === undefined) c.dense = true;
+    if (c.hol === undefined) c.hol = true;          // státní svátky ČR
+    if (!Array.isArray(c.shut)) c.shut = [];        // závodní odstávky
+    if (!Array.isArray(c.bl)) c.bl = [];            // registr baselines
+    if (c.blActive === undefined) c.blActive = "";  // proti které se porovnává
     return c;
   }
 
@@ -3214,7 +3218,64 @@ boot();
   }
   function nd(n) { return new Date(n * 864e5).toISOString().slice(0, 10); }
   function wd(n) { return new Date(n * 864e5).getUTCDay(); }
-  function isFree(n) { return wd(n) === 0 || wd(n) === 6; }
+  function isWknd(n) { return wd(n) === 0 || wd(n) === 6; }
+
+  /* ---------- SVÁTKY ČR ----------
+     Velikonoce = Meeus/Jones/Butcher (gregoriánský). Velký pátek je státní
+     svátek od 2016. Bez svátků plán počítal termíny přes Velikonoce
+     i vánoční odstávku, takže sliboval dřív, než se dá stihnout. */
+  function easterSunday(y) {
+    var a = y % 19, b = Math.floor(y / 100), c = y % 100;
+    var d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    var g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+    var i2 = Math.floor(c / 4), k = c % 4;
+    var l = (32 + 2 * e + 2 * i2 - h - k) % 7;
+    var m = Math.floor((a + 11 * h + 22 * l) / 451);
+    var mon = Math.floor((h + l - 7 * m + 114) / 31);      // 3 = březen, 4 = duben
+    var day = ((h + l - 7 * m + 114) % 31) + 1;
+    return Math.round(Date.UTC(y, mon - 1, day) / 864e5);
+  }
+  var HOL_CACHE = {};
+  /** Mapa epochDay → název svátku pro daný rok. */
+  function czHolidays(y) {
+    if (HOL_CACHE[y]) return HOL_CACHE[y];
+    var h = {};
+    var fix = [
+      [0, 1, "Nový rok"], [4, 1, "Svátek práce"], [4, 8, "Den vítězství"],
+      [6, 5, "Cyril a Metoděj"], [6, 6, "Jan Hus"], [8, 28, "Den české státnosti"],
+      [9, 28, "Vznik ČSR"], [10, 17, "Boj za svobodu a demokracii"],
+      [11, 24, "Štědrý den"], [11, 25, "1. svátek vánoční"], [11, 26, "2. svátek vánoční"]
+    ];
+    fix.forEach(function (x) { h[Math.round(Date.UTC(y, x[0], x[1]) / 864e5)] = x[2]; });
+    var es = easterSunday(y);
+    h[es - 2] = "Velký pátek";
+    h[es + 1] = "Velikonoční pondělí";
+    HOL_CACHE[y] = h;
+    return h;
+  }
+  /** Název svátku pro den, nebo "". Respektuje přepínač cfg().hol. */
+  function holName(n) {
+    if (cfg().hol === false) return "";
+    var y = new Date(n * 864e5).getUTCFullYear();
+    return czHolidays(y)[n] || "";
+  }
+  /** Závodní odstávky — intervaly v cfg().shut, např. celozávodní dovolená. */
+  function shutName(n) {
+    var s = cfg().shut;
+    if (!Array.isArray(s)) return "";
+    for (var i2 = 0; i2 < s.length; i2++) {
+      if (!s[i2] || !s[i2].from) continue;
+      var a = dn(s[i2].from), b = dn(s[i2].due || s[i2].from);
+      if (n >= a && n <= b) return s[i2].name || "Odstávka";
+    }
+    return "";
+  }
+  /** Nepracovní den = víkend, státní svátek nebo závodní odstávka. */
+  function isFree(n) { return isWknd(n) || !!holName(n) || !!shutName(n); }
+  /** Proč je den volný — pro tooltip a kalendář. */
+  function freeWhy(n) {
+    return holName(n) || shutName(n) || (isWknd(n) ? "víkend" : "");
+  }
   function nextWork(n) { while (isFree(n)) n++; return n; }
   function isoWeek(n) {
     var d = new Date(n * 864e5);
@@ -3266,6 +3327,76 @@ boot();
   }
   function byId(id) { var f = findIssue(id); return f ? f.i : null; }
   function projOf(id) { var f = findIssue(id); return f ? f.p : null; }
+
+  /* ============================================================
+     VERZOVANÉ BASELINE (B0, B1, B2…)
+     Dřív existovala jediná baseline (baseFrom/baseDue) a „Uložit baseline"
+     ji přepsala — nešlo ukázat, co se změnilo mezi G2 a G3. Teď se každá
+     verze uloží zvlášť do i.bl a porovnávat lze proti libovolné.
+     baseFrom/baseDue zůstávají = AKTIVNÍ baseline, aby list PLAN i starší
+     zálohy dál fungovaly beze změny schématu.
+     ============================================================ */
+
+  /** Jednorázová migrace: existující baseFrom/baseDue se stane B0. */
+  function blMigrate() {
+    var c = cfg();
+    if (c.bl.length) return;
+    var has = allPlan().filter(function (i) { return i.baseFrom; });
+    if (!has.length) return;
+    has.forEach(function (i) {
+      i.bl = i.bl || {};
+      i.bl.B0 = { f: i.baseFrom, d: i.baseDue || i.baseFrom };
+    });
+    c.bl = [{ id: "B0", name: "B0 — původní", ts: Date.now(), count: has.length }];
+    c.blActive = "B0";
+  }
+
+  /** Uloží novou verzi baseline nad aktuálně filtrovaným plánem. */
+  function blSave(name) {
+    var c = cfg(), l = rows();
+    if (!l.length) return null;
+    var id = "B" + c.bl.length;
+    l.forEach(function (i) {
+      i.bl = i.bl || {};
+      i.bl[id] = { f: i.from, d: i.due };
+      i.baseFrom = i.from; i.baseDue = i.due;      // aktivní = tato nová
+    });
+    c.bl.push({ id: id, name: name || (id + " — " + today()), ts: Date.now(), count: l.length });
+    c.blActive = id;
+    return id;
+  }
+
+  /** Přepne, proti které baseline se kreslí a počítá slip. */
+  function blActivate(id) {
+    var c = cfg();
+    c.blActive = id || "";
+    allPlan().forEach(function (i) {
+      var b = (i.bl || {})[id];
+      if (b) { i.baseFrom = b.f; i.baseDue = b.d; }
+      else if (!id) { i.baseFrom = ""; i.baseDue = ""; }
+    });
+  }
+
+  /** Základna pro vykreslení a slip — aktivní baseline, jinak legacy pole. */
+  function baseOf(i) {
+    var c = cfg();
+    var b = c.blActive && i.bl ? i.bl[c.blActive] : null;
+    if (b) return { from: b.f, due: b.d || b.f };
+    if (i.baseFrom) return { from: i.baseFrom, due: i.baseDue || i.baseFrom };
+    return null;
+  }
+
+  /** Diff aktuálního plánu proti libovolné baseline — pro gate review. */
+  function blDiff(id) {
+    var out = { moved: [], added: [], gone: [], sumSlip: 0 };
+    allPlan().forEach(function (i) {
+      var b = (i.bl || {})[id];
+      if (!b) { out.added.push(i); return; }
+      var s = dn(i.due) - dn(b.d || b.f);
+      if (s !== 0) { out.moved.push({ i: i, slip: s, was: b }); out.sumSlip += s; }
+    });
+    return out;
+  }
 
   /* ---------- TÝM ---------- */
   function team() { if (!Array.isArray(state.team)) state.team = []; return state.team; }
@@ -3652,6 +3783,13 @@ boot();
       '.pltr{position:relative;flex:0 0 auto;height:' + RH + 'px}' +
       '.plbg{position:absolute;top:0;z-index:0;pointer-events:none}' +
       '.plwe{position:absolute;top:0;bottom:0;background:var(--panel2);opacity:.6}' +
+      '.plhol{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,' +
+      'var(--amber-dim),var(--amber-dim) 4px,transparent 4px,transparent 8px);pointer-events:auto}' +
+      '.plbl{display:inline-flex;align-items:center;gap:4px}' +
+      '.plbl select{width:auto;padding:4px 6px;font-size:11px;font-family:var(--mono)}' +
+      '.plshut .it{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}' +
+      '.plshut .it .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+      '.plshut .it .dt{font-family:var(--mono);font-size:10.5px;color:var(--ink3);white-space:nowrap}' +
       '.plnow{position:absolute;top:0;bottom:0;width:2px;background:var(--now);box-shadow:0 0 0 .5px var(--now-hi);z-index:4;pointer-events:none}' +
       '.plnowl{position:absolute;bottom:2px;transform:translateX(-50%);font-family:var(--mono);font-size:7.5px;font-weight:800;' +
       'letter-spacing:.1em;color:var(--panel);background:var(--now);padding:1px 4px;border-radius:2px;z-index:10;pointer-events:none}' +
@@ -3877,9 +4015,14 @@ boot();
       '<label class="plchk"><input type="checkbox" id="plCrit"> Kritická cesta</label>' +
       '<label class="plchk"><input type="checkbox" id="plBase"> Baseline</label>' +
       '<label class="plchk"><input type="checkbox" id="plWknd"> Přeskakovat víkendy</label>' +
+      '<label class="plchk"><input type="checkbox" id="plHol"> Svátky ČR</label>' +
+      '<button class="btn ghost sm" onclick="PL.shutOpen()" title="Závodní odstávky a celozávodní dovolená">🏭 Odstávky</button>' +
+      '<span class="sep"></span>' +
+      '<span class="plbl"><select id="plBlSel" aria-label="Baseline" title="Proti které baseline se porovnává"></select>' +
+      '<button class="btn ghost sm" onclick="PL.baselineNew()" title="Uložit novou verzi baseline">⚑ Uložit B</button>' +
+      '<button class="btn ghost sm" onclick="PL.baselineDiff()" title="Diff proti baseline">Δ Diff</button></span>' +
       '<span class="sep"></span>' +
       '<button class="btn ghost sm" onclick="PL.add()">+ Úkol</button>' +
-      '<button class="btn ghost sm" onclick="PL.baseline()">⚑ Baseline</button>' +
       '<button class="btn ghost sm" onclick="PL.fit()">⤢ Přizpůsobit</button>' +
       '<button class="btn ghost sm" onclick="PL.goToday()">◉ Dnes</button>' +
       '<button class="btn ghost sm" onclick="PL.undo()">↶ Zpět</button>' +
@@ -3914,9 +4057,18 @@ boot();
     ["late", "crit", "mine"].forEach(function (o) {
       var b = g.querySelector('#plOnly button[data-o="' + o + '"]'); if (b) b.classList.toggle("on", c.only === o);
     });
-    [["plAuto", "auto"], ["plCrit", "crit"], ["plBase", "base"], ["plWknd", "wknd"]].forEach(function (x) {
+    [["plAuto", "auto"], ["plCrit", "crit"], ["plBase", "base"], ["plWknd", "wknd"],
+     ["plHol", "hol"]].forEach(function (x) {
       var e = document.getElementById(x[0]); if (e) e.checked = !!c[x[1]];
     });
+    blMigrate();
+    var blSel = document.getElementById("plBlSel");
+    if (blSel) {
+      blSel.innerHTML = '<option value="">bez baseline</option>' + c.bl.map(function (b) {
+        return '<option value="' + esc(b.id) + '"' + (c.blActive === b.id ? " selected" : "") + '>' +
+          esc(b.name) + '</option>';
+      }).join("");
+    }
     document.getElementById("plDense").addEventListener("change", function (e) {
       cfg().dense = e.target.checked; save(); render();
     });
@@ -3983,8 +4135,9 @@ boot();
     var px = PXZ[c.zoom] || PXZ.week;
     var min = Infinity, max = -Infinity;
     list.forEach(function (i) {
-      min = Math.min(min, dn(i.from), i.baseFrom ? dn(i.baseFrom) : Infinity);
-      max = Math.max(max, dn(i.due), i.baseDue ? dn(i.baseDue) : -Infinity);
+      var b0 = baseOf(i);
+      min = Math.min(min, dn(i.from), b0 ? dn(b0.from) : Infinity);
+      max = Math.max(max, dn(i.due), b0 ? dn(b0.due) : -Infinity);
     });
     var t = dn(today());
     min = Math.min(min, t) - 7; max = Math.max(max, t) + 10;
@@ -4081,12 +4234,14 @@ boot();
         var crit = c.crit && r.crit ? " crit" : "";
         var isSel = sel.has(i.id);
         var x1 = X(dn(i.from)), x2 = X(dn(i.due) + 1);
-        var slip = i.baseDue ? dn(i.due) - dn(i.baseDue) : null;
+        var bs = baseOf(i);
+        var slip = bs ? dn(i.due) - dn(bs.due) : null;
         var dur = workDays(i.from, i.due);
         var lbl = esc(i.title).slice(0, 44) + (i.progress ? " · " + i.progress + "%" : "");
         var lblIn = x1 > 300 && (x2 - x1) < 90 && x2 > W - 260;
-        var base = (c.base && i.baseFrom) ? '<div class="plbase" style="left:' + X(dn(i.baseFrom)) + 'px;width:' +
-          Math.max(3, X(dn(i.baseDue || i.baseFrom) + 1) - X(dn(i.baseFrom))) + 'px"></div>' : "";
+        var base = (c.base && bs) ? '<div class="plbase" title="' + esc(c.blActive || "baseline") +
+          ": " + bs.from + " → " + bs.due + '" style="left:' + X(dn(bs.from)) + 'px;width:' +
+          Math.max(3, X(dn(bs.due) + 1) - X(dn(bs.from))) + 'px"></div>' : "";
         var bar = i.milestone
           ? '<div class="plms ' + (st === "Done" ? "done" : "") + crit + (isSel ? " selb" : "") + '" data-id="' + i.id +
             '" data-role="move" style="left:' + x1 + 'px">◆<i class="pllink" data-role="link" style="right:-16px;top:5px"></i>' +
@@ -4144,6 +4299,12 @@ boot();
     if (c.zoom !== "month") {
       for (cur = min; cur <= max; cur++) {
         if (wd(cur) === 6) bg += '<div class="plwe" style="left:' + X(cur) + 'px;width:' + (2 * px) + 'px"></div>';
+        // svátky a odstávky odlišeně — jinak vypadají jako obyčejný pracovní den
+        var why = holName(cur) || shutName(cur);
+        if (why && !isWknd(cur)) {
+          bg += '<div class="plhol" title="' + esc(why) + '" style="left:' + X(cur) +
+            'px;width:' + px + 'px"></div>';
+        }
       }
     }
     list.filter(function (i) { return i.milestone && i.gate; }).forEach(function (i) {
@@ -4237,10 +4398,17 @@ boot();
       var b = e.target.closest("button"); if (!b) return;
       var c = cfg(); c.only = c.only === b.dataset.o ? "" : b.dataset.o; save(); render();
     });
-    [["plAuto", "auto"], ["plCrit", "crit"], ["plBase", "base"], ["plWknd", "wknd"]].forEach(function (x) {
-      document.getElementById(x[0]).addEventListener("change", function (e) {
+    [["plAuto", "auto"], ["plCrit", "crit"], ["plBase", "base"], ["plWknd", "wknd"],
+     ["plHol", "hol"]].forEach(function (x) {
+      var el2 = document.getElementById(x[0]); if (!el2) return;
+      el2.addEventListener("change", function (e) {
         cfg()[x[1]] = e.target.checked; save(); render();
       });
+    });
+    var blSel2 = document.getElementById("plBlSel");
+    if (blSel2) blSel2.addEventListener("change", function (e) {
+      blActivate(e.target.value); save(); render();
+      toast(e.target.value ? "Porovnávám proti " + e.target.value : "Baseline vypnuta");
     });
     var q = document.getElementById("plQ");
     q.addEventListener("input", function (e) { cfg().q = e.target.value; render(); q.focus(); });
@@ -4594,11 +4762,134 @@ boot();
       prov: { meetingId: "", source: "plán", speaker: me.user, quote: "" } });
     save(); render(); toast("Úkol přidán do " + p.name);
   };
-  PL.baseline = function () {
+  /** Uloží NOVOU verzi baseline (B0, B1, B2…). Předchozí zůstávají. */
+  PL.baselineNew = function () {
+    if (!canEdit()) return toast("Máš přístup jen pro čtení", true);
     var l = rows(); if (!l.length) return toast("Není co uložit", true);
+    var c = cfg();
+    var name = window.prompt("Název baseline (např. „B1 — po G2 review“):",
+      "B" + c.bl.length + " — " + today());
+    if (name === null) return;
     snap("baseline");
-    l.forEach(function (i) { i.baseFrom = i.from; i.baseDue = i.due; });
-    save(); render(); toast("Baseline uložena · " + l.length + " úkolů");
+    blMigrate();
+    var id = blSave(String(name).trim());
+    save(); render();
+    toast("Baseline " + id + " uložena · " + l.length + " úkolů · porovnává se proti ní");
+  };
+  /** Zpětná kompatibilita — staré volání PL.baseline() dělá totéž. */
+  PL.baseline = function () { return PL.baselineNew(); };
+
+  /** Diff aktuálního plánu proti vybrané baseline — podklad pro gate review. */
+  PL.baselineDiff = function () {
+    var c = cfg();
+    blMigrate();
+    if (!c.bl.length) return toast("Zatím žádná baseline — ulož ji tlačítkem „⚑ Uložit B“", true);
+    var id = c.blActive || c.bl[c.bl.length - 1].id;
+    var d = blDiff(id);
+    var m = document.getElementById("plDiff");
+    if (!m) {
+      m = document.createElement("div"); m.className = "mbg"; m.id = "plDiff";
+      document.body.appendChild(m);
+      m.addEventListener("mousedown", function (e) { if (e.target === m) m.classList.remove("show"); });
+    }
+    var late = d.moved.filter(function (x) { return x.slip > 0; }).sort(function (a, b) { return b.slip - a.slip; });
+    var early = d.moved.filter(function (x) { return x.slip < 0; }).sort(function (a, b) { return a.slip - b.slip; });
+    var rowsHtml = function (arr) {
+      return arr.slice(0, 40).map(function (x) {
+        return '<tr><td style="font-size:12px">' + esc(x.i.title) + '</td>' +
+          '<td class="mono" style="font-size:10.5px;color:var(--ink3)">' + esc(x.was.d || x.was.f) + '</td>' +
+          '<td class="mono" style="font-size:10.5px">' + esc(x.i.due) + '</td>' +
+          '<td class="mono" style="font-weight:800;text-align:right;color:' +
+          (x.slip > 0 ? "var(--red)" : "var(--signal)") + '">' +
+          (x.slip > 0 ? "+" : "") + x.slip + 'd</td></tr>';
+      }).join("");
+    };
+    m.innerHTML = '<div class="modal" style="width:min(760px,96vw)">' +
+      '<h3>Diff proti baseline ' + esc(id) + '</h3>' +
+      '<div class="kpis" style="margin-bottom:12px">' +
+      '<div class="kpi ' + (late.length ? "bad" : "ok") + '"><div class="lb">Posunuto později</div>' +
+      '<div class="vl">' + late.length + '</div><div class="sb">úkolů</div></div>' +
+      '<div class="kpi ok"><div class="lb">Posunuto dřív</div><div class="vl">' + early.length +
+      '</div><div class="sb">úkolů</div></div>' +
+      '<div class="kpi ' + (d.sumSlip > 0 ? "bad" : "ok") + '"><div class="lb">Souhrnný posun</div>' +
+      '<div class="vl">' + (d.sumSlip > 0 ? "+" : "") + d.sumSlip + '</div><div class="sb">dní</div></div>' +
+      '<div class="kpi info"><div class="lb">Nové od baseline</div><div class="vl">' + d.added.length +
+      '</div><div class="sb">nebyly v plánu</div></div></div>' +
+      (late.length ? '<h3 class="sect">Zpoždění proti plánu</h3>' +
+        '<div style="max-height:210px;overflow-y:auto"><table><thead><tr><th>Úkol</th>' +
+        '<th>Baseline</th><th>Nyní</th><th style="text-align:right">Posun</th></tr></thead><tbody>' +
+        rowsHtml(late) + '</tbody></table></div>' : "") +
+      (early.length ? '<h3 class="sect">Zrychleno</h3>' +
+        '<div style="max-height:150px;overflow-y:auto"><table><tbody>' + rowsHtml(early) +
+        '</tbody></table></div>' : "") +
+      (!d.moved.length ? '<div class="empty">Plán sedí s baseline ' + esc(id) + '. Nic se neposunulo.</div>' : "") +
+      '<div class="row"><button class="btn ghost" onclick="PL.diffCopy()">Kopírovat pro report</button>' +
+      '<button class="btn" onclick="closeModal(\'plDiff\')">Zavřít</button></div></div>';
+    m.classList.add("show");
+    m._diff = { id: id, d: d };
+  };
+  PL.diffCopy = function () {
+    var m = document.getElementById("plDiff"); if (!m || !m._diff) return;
+    var id = m._diff.id, d = m._diff.d;
+    var t = "POSUN PROTI BASELINE " + id + "  (" + today() + ")\n" + "=".repeat(52) + "\n";
+    t += "Posunuto později: " + d.moved.filter(function (x) { return x.slip > 0; }).length +
+      " · dřív: " + d.moved.filter(function (x) { return x.slip < 0; }).length +
+      " · souhrn " + (d.sumSlip > 0 ? "+" : "") + d.sumSlip + " dní\n\n";
+    d.moved.sort(function (a, b) { return b.slip - a.slip; }).forEach(function (x) {
+      t += "  " + (x.slip > 0 ? "+" : "") + x.slip + "d  " + x.i.title +
+        "  (" + (x.was.d || x.was.f) + " → " + x.i.due + ")\n";
+    });
+    navigator.clipboard.writeText(t).then(function () { toast("Diff zkopírován"); },
+      function () { toast("Kopírování selhalo", true); });
+  };
+
+  /* ---------- závodní odstávky ---------- */
+  PL.shutOpen = function () {
+    var m = document.getElementById("plShut");
+    if (!m) {
+      m = document.createElement("div"); m.className = "mbg"; m.id = "plShut";
+      document.body.appendChild(m);
+      m.addEventListener("mousedown", function (e) { if (e.target === m) m.classList.remove("show"); });
+    }
+    PL.shutPaint();
+    m.classList.add("show");
+  };
+  PL.shutPaint = function () {
+    var m = document.getElementById("plShut"); if (!m) return;
+    var s = cfg().shut;
+    m.innerHTML = '<div class="modal plshut" style="width:min(560px,96vw)">' +
+      '<h3>Závodní odstávky</h3>' +
+      '<div class="hint" style="margin-bottom:10px">Celozávodní dovolená, plánované odstávky linky, ' +
+      'inventura. V těchto dnech plán nepočítá práci — stejně jako o víkendu a státním svátku.</div>' +
+      '<div id="plShutList">' + (s.length ? s.map(function (x, n) {
+        return '<div class="it"><span class="nm">' + esc(x.name || "Odstávka") + '</span>' +
+          '<span class="dt">' + esc(x.from) + " → " + esc(x.due || x.from) + '</span>' +
+          '<button class="rowbtn no" onclick="PL.shutDel(' + n + ')" aria-label="Odebrat">✕</button></div>';
+      }).join("") : '<div class="empty">Zatím žádná odstávka.</div>') + '</div>' +
+      '<div class="frm c3" style="margin-top:12px">' +
+      '<div class="field"><label>Název</label><input id="plShutName" placeholder="Celozávodní dovolená"></div>' +
+      '<div class="field"><label>Od</label><input id="plShutFrom" type="date"></div>' +
+      '<div class="field"><label>Do</label><input id="plShutTo" type="date"></div></div>' +
+      '<div class="row"><button class="btn ghost" onclick="closeModal(\'plShut\')">Zavřít</button>' +
+      '<button class="btn" onclick="PL.shutAdd()">Přidat odstávku</button></div></div>';
+  };
+  PL.shutAdd = function () {
+    if (!canEdit()) return toast("Máš přístup jen pro čtení", true);
+    var f = document.getElementById("plShutFrom").value;
+    var t2 = document.getElementById("plShutTo").value || f;
+    var nm = document.getElementById("plShutName").value.trim() || "Odstávka";
+    if (!f) return toast("Zadej datum od", true);
+    if (t2 < f) return toast("Datum do je před datem od", true);
+    snap("odstávka");
+    cfg().shut.push({ name: nm, from: f, due: t2 });
+    cfg().shut.sort(function (a, b) { return a.from < b.from ? -1 : 1; });
+    save(); PL.shutPaint(); render();
+    toast("Odstávka „" + nm + "“ přidána — plán ji přeskočí");
+  };
+  PL.shutDel = function (n) {
+    snap("odstávka");
+    cfg().shut.splice(n, 1);
+    save(); PL.shutPaint(); render();
   };
   PL.fit = function () {
     var l = rows(); if (!l.length) return;
@@ -5483,7 +5774,11 @@ boot();
   PL._test = { dn: dn, nd: nd, wd: wd, isFree: isFree, nextWork: nextWork,
     isoWeek: isoWeek, workDays: workDays, cpm: cpm, autoSchedule: autoSchedule,
     depOk: depOk, overload: overload, norm: norm,
-    cycleIds: cycleIds, wouldCycle: wouldCycle, allPlan: allPlan, rows: rows };
+    cycleIds: cycleIds, wouldCycle: wouldCycle, allPlan: allPlan, rows: rows,
+    easterSunday: easterSunday, czHolidays: czHolidays, holName: holName,
+    shutName: shutName, freeWhy: freeWhy, isWknd: isWknd,
+    cfg: cfg, blSave: blSave, blActivate: blActivate, blDiff: blDiff,
+    blMigrate: blMigrate, baseOf: baseOf };
 
   window.PL = PL;
   window.renderGantt = render;
