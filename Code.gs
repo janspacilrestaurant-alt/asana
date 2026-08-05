@@ -570,7 +570,7 @@ function seenAppend_(source, ids) {
 /* ---------- SCAN ZDROJŮ (trigger každých 30 min) ---------- */
 function scanSourcesSilently() {
   // Přes UI smí skenovat jen editor/owner (skeny berou kvótu a čtou Gmail/Drive).
-  // Časový trigger běží pod identitou ownera (stejná Workspace doména), takže projde.
+  // Časový trigger běží pod identitou ownera, který ho založil, takže projde.
   if (!canWrite_()) return { found: 0, error: "Nemáš právo skenovat (role viewer)." };
   var s = readSettings_();
   var found = [];
@@ -763,7 +763,7 @@ function digestSheet_() {
 }
 
 function sendDailyDigest() {
-  // Trigger běží jako owner (stejná doména); přes UI jen editor/owner.
+  // Trigger běží jako owner, který ho založil; přes UI jen editor/owner.
   if (!canWrite_()) return "Digest smí odeslat jen editor/owner (role viewer).";
   var st;
   try { st = JSON.parse(readStateRaw_() || "{}"); } catch (err) { return "Stav se nepodařilo přečíst."; }
@@ -834,7 +834,7 @@ var COLMAP = {
 
 function norm_(s) {
   return String(s || "").toLowerCase().trim()
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/\s+/g, " ");
 }
 
@@ -958,7 +958,7 @@ function sheetRows(urlOrId, sheetName) {
 
 function normTitle_(s) {
   return String(s || "").toLowerCase()
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
@@ -1578,28 +1578,62 @@ function removeTriggers() {
   return "Triggery vypnuty (" + n + ")";
 }
 
-/** ===== PM Hub v4 — obousměrná sync plánu se Sheetem =====
- *  Vlož na konec Code.gs. List "PLAN" leží ve stejné tabulce jako stav.
- *  Sheet je zdroj pravdy: co v něm není, Hub při syncu smaže.
- *  Po vložení nasadit novou verzi deploymentu. Nové scopes netřeba.
+/** ===== PM Hub — obousměrná sync Plánu se Sheetem (v6) =====
+ *  List "PLAN" leží ve stejné tabulce jako stav. Sheet je zdroj pravdy.
+ *  Hlavička se při změně schématu sama zmigruje — data se namapují podle
+ *  názvů sloupců, ne podle pořadí, takže starší list se nerozsype.
  */
 var PLAN_SHEET = 'PLAN';
-var PLAN_HEAD = ['ID', 'Projekt', 'Typ', 'Milník', 'Název', 'Problém', 'Odpovědný', 'Support', 'Od', 'Termín',
-  'Hotovo', 'Status', 'Priorita', 'Gate', 'Vazby', 'Baseline od', 'Baseline do', 'Pořadí', 'Zdroj', 'Odkaz'];
+var PLAN_HEAD = ['ID', 'Projekt', 'Typ', 'Milník', 'Název', 'Problém', 'Odpovědný', 'Support',
+  'Od', 'Termín', 'Hotovo', 'Status', 'Priorita', 'Gate', 'Vazby', 'Baseline od', 'Baseline do',
+  'Pořadí', 'Zdroj', 'Odkaz', 'Poznámky'];
 
 function planSheet_() {
-  var ss = ss_();                       // stejná tabulka jako _state
+  var ss = ss_();
   var sh = ss.getSheetByName(PLAN_SHEET);
   if (!sh) {
     sh = ss.insertSheet(PLAN_SHEET);
     sh.getRange(1, 1, 1, PLAN_HEAD.length).setValues([PLAN_HEAD])
       .setFontWeight('bold').setBackground('#DFE3E3');
     sh.setFrozenRows(1);
-    sh.setColumnWidth(1, 120); sh.setColumnWidth(5, 300); sh.setColumnWidth(8, 180); sh.setColumnWidth(15, 220);
+    sh.setColumnWidth(1, 120); sh.setColumnWidth(5, 320); sh.setColumnWidth(8, 170);
+    sh.setColumnWidth(15, 200); sh.setColumnWidth(21, 320);
     sh.getRange('I:J').setNumberFormat('yyyy-mm-dd');
     sh.getRange('P:Q').setNumberFormat('yyyy-mm-dd');
+    return sh;
   }
+  planMigrate_(sh);
   return sh;
+}
+
+/** Přemapuje list na aktuální hlavičku podle názvů sloupců. */
+function planMigrate_(sh) {
+  var lastCol = sh.getLastColumn(), lastRow = sh.getLastRow();
+  var head = lastCol ? sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); }) : [];
+  if (head.join('|') === PLAN_HEAD.join('|')) return;
+
+  var idx = {};
+  head.forEach(function (h, i) { if (h) idx[h.toLowerCase()] = i; });
+  var out = [];
+  if (lastRow > 1 && lastCol) {
+    var vals = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    vals.forEach(function (r) {
+      if (!r[0]) return;
+      var line = PLAN_HEAD.map(function (h) {
+        var i2 = idx[h.toLowerCase()];
+        return i2 === undefined ? '' : r[i2];
+      });
+      out.push(line);
+    });
+  }
+  sh.clear();
+  sh.getRange(1, 1, 1, PLAN_HEAD.length).setValues([PLAN_HEAD])
+    .setFontWeight('bold').setBackground('#DFE3E3');
+  sh.setFrozenRows(1);
+  if (out.length) sh.getRange(2, 1, out.length, PLAN_HEAD.length).setValues(out);
+  sh.getRange('I:J').setNumberFormat('yyyy-mm-dd');
+  sh.getRange('P:Q').setNumberFormat('yyyy-mm-dd');
+  audit_('planMigrate', 'sheet', PLAN_SHEET, head.length + ' → ' + PLAN_HEAD.length + ' sloupců');
 }
 
 function planSheetUrl() {
@@ -1614,7 +1648,6 @@ function planD_(v) {
   return String(v).slice(0, 10);
 }
 
-/** Všechny řádky plánu ze Sheetu. */
 function planPull() {
   var sh = planSheet_();
   var last = sh.getLastRow();
@@ -1643,7 +1676,8 @@ function planPull() {
       baseDue: planD_(r[16]),
       ord: Number(r[17]) || 0,
       source: String(r[18] || ''),
-      srcUrl: String(r[19] || '')
+      srcUrl: String(r[19] || ''),
+      notes: String(r[20] || '').split(' ⏎ ').join('\n')
     });
   });
   return out;
@@ -1657,11 +1691,10 @@ function planPush(rowsJson) {
   if (!lock.tryLock(LOCK_MS)) return { error: 'Server je zaneprázdněný.' };
   try {
     var sh = planSheet_();
-    var last = sh.getLastRow();
     var keep = {};
     rows.forEach(function (r) { keep[r.id] = 1; });
 
-    // smazat odzadu, co klient už neposílá
+    var last = sh.getLastRow();
     if (last > 1) {
       var ids = sh.getRange(2, 1, last - 1, 1).getValues();
       for (var i = ids.length - 1; i >= 0; i--) {
@@ -1680,7 +1713,8 @@ function planPush(rowsJson) {
     rows.forEach(function (r) {
       var line = [r.id, r.project, r.type, r.milestone, r.title, r.problem, r.responsible, r.support,
         r.from, r.due, r.progress, r.status, r.priority, r.gate, r.deps,
-        r.baseFrom, r.baseDue, r.ord, r.source, r.srcUrl];
+        r.baseFrom, r.baseDue, r.ord, r.source, r.srcUrl,
+        String(r.notes || '').split('\n').join(' ⏎ ')];
       if (idx[r.id]) sh.getRange(idx[r.id], 1, 1, PLAN_HEAD.length).setValues([line]);
       else appends.push(line);
     });
@@ -1695,12 +1729,12 @@ function planPush(rowsJson) {
   }
 }
 
-/** Diagnostika — spusť z editoru. */
 function testPlan() {
   var msg;
   try {
     var sh = planSheet_();
-    msg = 'OK — list ' + PLAN_SHEET + ', řádků: ' + Math.max(0, sh.getLastRow() - 1) + '\n' + planSheetUrl();
+    msg = 'OK — list ' + PLAN_SHEET + ', řádků: ' + Math.max(0, sh.getLastRow() - 1) +
+      ', sloupců: ' + PLAN_HEAD.length + '\n' + planSheetUrl();
   } catch (err) { msg = 'CHYBA: ' + err.message; }
   Logger.log(msg);
   return msg;
