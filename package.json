@@ -1,0 +1,10 @@
+{
+  "name": "pm-hub",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PM Hub — Valeo P0 Suite (Google Apps Script + HtmlService). Dev/test tooling only; runtime má nula závislostí mimo Google.",
+  "type": "module",
+  "scripts": {
+    "check": "node tools/check-syntax.mjs"
+  }
+}
