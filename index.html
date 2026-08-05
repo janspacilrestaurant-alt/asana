@@ -4913,6 +4913,12 @@ boot();
     toast("Zdroj nastaven: " + (SRC_NAME[k] || "odkaz"));
   };
 
+  // Test-only export čistých engine funkcí (B7). Bez vlivu na běh appky —
+  // jen zpřístupní jinak privátní kalendář/CPM pro unit testy v jsdom.
+  PL._test = { dn: dn, nd: nd, wd: wd, isFree: isFree, nextWork: nextWork,
+    isoWeek: isoWeek, workDays: workDays, cpm: cpm, autoSchedule: autoSchedule,
+    depOk: depOk, overload: overload, norm: norm };
+
   window.PL = PL;
   window.renderGantt = render;
   if (typeof view !== "undefined" && view === "plan") render();
