@@ -376,3 +376,133 @@ test("baseline — migrace staré jediné baseFrom/baseDue na B0", () => {
   assert.equal(plan[0].bl.B0.f, "2026-01-05");
   assert.equal(plan[0].bl.B0.d, "2026-01-09");
 });
+
+/* ============================================================
+   EVM — proti ručně spočítaným hodnotám
+   ============================================================ */
+test("plannedFrac — kolik mělo být hotovo k datu", () => {
+  PLt.cfg().hol = false; PLt.cfg().shut = []; PLt.cfg().bl = []; PLt.cfg().blActive = "";
+  // Po 5.1. → Pá 9.1.2026 = 5 pracovních dní, bez baseline se bere plán
+  const i = { id: "T", from: "2026-01-05", due: "2026-01-09", progress: 0, deps: [] };
+  assert.equal(PLt.plannedFrac(i, "2026-01-04"), 0, "před startem 0 %");
+  assert.equal(PLt.plannedFrac(i, "2026-01-09"), 1, "v den termínu 100 %");
+  assert.equal(PLt.plannedFrac(i, "2026-01-12"), 1, "po termínu zůstává 100 %");
+  // ke středě 7.1. jsou odpracované Po,Út,St = 3 z 5
+  assert.equal(PLt.plannedFrac(i, "2026-01-07"), 3 / 5);
+});
+
+test("evm — SPI přesně 1.00, když se plní podle plánu", () => {
+  PLt.cfg().hol = false; PLt.cfg().shut = [];
+  // dva úkoly po 5 prac. dnech, k 9.1. mají být oba hotové a jsou
+  const list = [
+    { id: "A", from: "2026-01-05", due: "2026-01-09", progress: 100, deps: [] },
+    { id: "B", from: "2026-01-05", due: "2026-01-09", progress: 100, deps: [] },
+  ];
+  const E = PLt.evm(list, "2026-01-09");
+  assert.equal(E.BAC, 10, "váha = 5+5 pracovních dní");
+  assert.equal(E.PV, 10);
+  assert.equal(E.EV, 10);
+  assert.equal(E.SPI, 1);
+  assert.equal(E.unit, "dní");
+});
+
+test("evm — SPI < 1 při skluzu, spočítáno ručně", () => {
+  PLt.cfg().hol = false; PLt.cfg().shut = [];
+  // A hotové (5 dní), B na 20 % → EV = 5 + 1 = 6; PV k 9.1. = 10
+  const list = [
+    { id: "A", from: "2026-01-05", due: "2026-01-09", progress: 100, deps: [] },
+    { id: "B", from: "2026-01-05", due: "2026-01-09", progress: 20, deps: [] },
+  ];
+  const E = PLt.evm(list, "2026-01-09");
+  assert.equal(E.EV, 6);
+  assert.equal(E.PV, 10);
+  assert.equal(E.SPI, 0.6);
+  assert.equal(E.CPI, null, "bez odpracovaných hodin se CPI nepočítá");
+  assert.equal(E.EAC, null, "EAC bez CPI taky ne");
+});
+
+test("evm — s effort/spent se váží hodiny a spočte se CPI", () => {
+  PLt.cfg().hol = false; PLt.cfg().shut = [];
+  // plán 100 h, hotovo 50 %, odpracováno 80 h → EV 50, CPI = 50/80 = 0.625
+  const list = [
+    { id: "A", from: "2026-01-05", due: "2026-01-09", progress: 50, effort: 100, spent: 80, deps: [] },
+  ];
+  const E = PLt.evm(list, "2026-01-09");
+  assert.equal(E.useHours, true);
+  assert.equal(E.unit, "h");
+  assert.equal(E.BAC, 100);
+  assert.equal(E.EV, 50);
+  assert.equal(E.AC, 80);
+  assert.equal(E.CPI, 0.625);
+  assert.equal(E.EAC, 160, "EAC = BAC/CPI = 100/0.625");
+});
+
+test("evm — milníky se do objemu práce nepočítají", () => {
+  PLt.cfg().hol = false; PLt.cfg().shut = [];
+  const list = [
+    { id: "A", from: "2026-01-05", due: "2026-01-09", progress: 0, deps: [] },
+    { id: "M", from: "2026-01-09", due: "2026-01-09", progress: 0, milestone: true, deps: [] },
+  ];
+  assert.equal(PLt.evm(list, "2026-01-09").BAC, 5, "jen úkol, milník ne");
+});
+
+test("evm — PV se počítá proti BASELINE, ne proti posunutému plánu", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  const T = w2.PL._test;
+  T.cfg().hol = false; T.cfg().shut = []; T.cfg().bl = []; T.cfg().blActive = "";
+  const it = T.allPlan()[0];
+  it.from = "2026-01-05"; it.due = "2026-01-09"; it.progress = 0;
+  T.blSave("B0");                                  // baseline = 5.–9.1.
+  it.from = "2026-02-02"; it.due = "2026-02-06";   // plán posunut o měsíc
+  // k 9.1. baseline říká „mělo být 100 %", posunutý plán by řekl 0 %
+  assert.equal(T.plannedFrac(it, "2026-01-09"), 1, "PV drží původní závazek");
+});
+
+/* ============================================================
+   GATE REVIEW PACK
+   ============================================================ */
+test("gate review pack — interní varianta obsahuje sekce a čísla", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  w2.go("dash");
+  w2.PL.gateOpen();
+  w2.document.getElementById("plGateMode").value = "int";
+  w2.PL.gateBuild();
+  const out = w2.document.getElementById("plGateOut").value;
+  assert.match(out, /PODKLAD PRO GATE REVIEW/);
+  assert.match(out, /SHRNUTÍ/);
+  assert.match(out, /EARNED VALUE \(EVM\)/);
+  assert.match(out, /SPI:/);
+  assert.match(out, /Vygenerováno z PM Hub/);
+});
+
+test("gate review pack — zákaznická varianta je anglicky a bez interního kontextu", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  w2.go("dash");
+  w2.PL.gateOpen();
+  w2.document.getElementById("plGateMode").value = "cust";
+  w2.PL.gateBuild();
+  const out = w2.document.getElementById("plGateOut").value;
+  assert.match(out, /GATE REVIEW PACK/);
+  assert.match(out, /SUMMARY/);
+  assert.match(out, /EARNED VALUE/);
+  assert.match(out, /Generated by PM Hub/);
+  // české nadpisy se do zákaznické varianty nesmí dostat
+  assert.doesNotMatch(out, /SHRNUTÍ|OTEVŘENÁ RIZIKA|Bez odpovědného/);
+});
+
+test("gate review pack — filtr podle gate zúží obsah", () => {
+  const w2 = loadApp();
+  w2.loadDemo();
+  w2.go("dash");
+  w2.PL.gateOpen();
+  const sel = w2.document.getElementById("plGateSel");
+  const opts = [...sel.options].map((o) => o.value).filter(Boolean);
+  assert.ok(opts.length, "demo má gates G3/G4/G5");
+  sel.value = opts[0];
+  w2.PL.gateBuild();
+  const out = w2.document.getElementById("plGateOut").value;
+  assert.match(out, new RegExp("— " + opts[0]), "nadpis nese vybraný gate");
+});

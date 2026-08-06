@@ -3725,6 +3725,51 @@ boot();
     return out;
   }
 
+  /* ============================================================
+     EVM — Earned Value Management
+     Váha úkolu = hodiny (i.effort), když jsou vyplněné, jinak pracovní dny.
+     PV se počítá proti BASELINE (co mělo být hotové), EV z i.progress.
+     AC = i.spent (skutečně odpracováno). Bez spent se AC/CPI NEPOČÍTÁ —
+     radši chybějící číslo než vymyšlené.
+     ============================================================ */
+
+  /** Váha úkolu: hodiny, když je aspoň někde effort, jinak pracovní dny. */
+  function evmWeight(i, useHours) {
+    if (useHours) return Math.max(0, +i.effort || 0);
+    return Math.max(1, workDays(i.from, i.due));
+  }
+  /** Jaká část úkolu MĚLA být k datu hotová (podle baseline, jinak podle plánu). */
+  function plannedFrac(i, asOf) {
+    var b = baseOf(i);
+    var f = b ? b.from : i.from, d = b ? b.due : i.due;
+    var a = dn(asOf), s = dn(f), e = dn(d);
+    if (a < s) return 0;
+    if (a >= e) return 1;
+    var tot = Math.max(1, workDays(f, d)), donePart = workDays(f, nd(a));
+    return Math.max(0, Math.min(1, donePart / tot));
+  }
+  function evm(list, asOf) {
+    asOf = asOf || today();
+    var useHours = list.some(function (i) { return +i.effort > 0; });
+    var hasSpent = list.some(function (i) { return +i.spent > 0; });
+    var BAC = 0, PV = 0, EV = 0, AC = 0;
+    list.forEach(function (i) {
+      if (i.milestone) return;                       // milník nemá objem práce
+      var w = evmWeight(i, useHours);
+      BAC += w;
+      PV += w * plannedFrac(i, asOf);
+      EV += w * Math.max(0, Math.min(100, +i.progress || 0)) / 100;
+      AC += Math.max(0, +i.spent || 0);
+    });
+    var SPI = PV > 0 ? EV / PV : null;
+    var CPI = (hasSpent && AC > 0) ? EV / AC : null;
+    // Odhad dokončení: podle nákladů, když CPI známe; jinak podle harmonogramu.
+    var EAC = CPI ? BAC / CPI : null;
+    return { BAC: BAC, PV: PV, EV: EV, AC: hasSpent ? AC : null,
+      SPI: SPI, CPI: CPI, EAC: EAC, unit: useHours ? "h" : "dní",
+      hasSpent: hasSpent, useHours: useHours, asOf: asOf };
+  }
+
   /* ---------- CSS ---------- */
   function css() {
     return '' +
@@ -4032,6 +4077,7 @@ boot();
       '<button class="btn ghost sm" onclick="window.print()">⎙ Tisk / PDF</button>' +
       '</div>' +
       '<div class="plt">' +
+      '<button class="btn ghost sm" onclick="PL.gateOpen()">📋 Gate review pack</button>' +
       '<button class="btn ghost sm" onclick="PL.sheet()">↗ Otevřít Sheet</button>' +
       '<button class="btn ghost sm" onclick="PL.copyTsv()">📋 Kopírovat pro Sheets</button>' +
       '<button class="btn ghost sm" onclick="PL.pasteOpen()">⬆ Vložit ze Sheetu</button>' +
@@ -5474,6 +5520,7 @@ boot();
       '<p class="sub">Stav portfolia na jedné obrazovce. Všechno je proklik — čísla vedou do Issues, ' +
       'jména do plánu, zdroje do porady, e-mailu nebo Chatu.</p></div>' +
       '<div style="display:flex;gap:7px"><button class="btn ghost sm" onclick="scanNow()">↻ Načíst zdroje</button>' +
+      '<button class="btn ghost sm" onclick="PL.gateOpen()" title="Podklad pro gate review G1–G5">📋 Gate review</button>' +
       '<button class="btn sm" onclick="PL.sync()">🔄 Sync</button></div></div>' +
       '<div class="dash" id="dashBody"></div>';
     sec.appendChild(d);
@@ -5646,6 +5693,40 @@ boot();
         }).join("") : '<div class="hint">Zatím žádné zdroje.</div>';
       })() + '</div></div></div>';
 
+    /* ---- EVM ---- */
+    var E = evm(D.plan, tIso);
+    var fmtN = function (v) { return v === null ? "—" : (Math.round(v * 10) / 10).toLocaleString("cs-CZ"); };
+    var idx = function (v) { return v === null ? "—" : (Math.round(v * 100) / 100).toFixed(2); };
+    var spiCls = E.SPI === null ? "info" : (E.SPI >= 0.95 ? "ok" : E.SPI >= 0.85 ? "warn" : "bad");
+    var cpiCls = E.CPI === null ? "info" : (E.CPI >= 0.95 ? "ok" : E.CPI >= 0.85 ? "warn" : "bad");
+    h += '<div class="dcard"><h4>EVM — Earned Value <span class="r">váha: ' +
+      (E.useHours ? "hodiny (effort)" : "pracovní dny") + ' · k ' + esc(tIso) + '</span></h4>' +
+      '<div class="dkpi">' +
+      dk("SPI — harmonogram", idx(E.SPI), spiCls,
+        E.SPI === null ? "chybí baseline" : (E.SPI >= 1 ? "napřed / podle plánu" : "za plánem"),
+        "PL.jumpPlan('','project','')") +
+      dk("CPI — náklady", idx(E.CPI), cpiCls,
+        E.CPI === null ? "chybí odpracováno" : (E.CPI >= 1 ? "v rozpočtu" : "dráž, než plánováno"),
+        "PL.evmHelp()") +
+      dk("EV / PV", fmtN(E.EV) + " / " + fmtN(E.PV), "info", "uděláno vs. mělo být (" + E.unit + ")",
+        "PL.jumpPlan('','project','')") +
+      dk("BAC → EAC", fmtN(E.BAC) + (E.EAC === null ? "" : " → " + fmtN(E.EAC)), E.EAC && E.EAC > E.BAC ? "bad" : "info",
+        E.EAC === null ? "odhad potřebuje CPI" : "odhad při dokončení (" + E.unit + ")", "PL.evmHelp()") +
+      '</div>' +
+      (E.SPI !== null
+        ? '<div class="hint" style="margin-top:10px">SPI = EV/PV. ' +
+          (E.SPI < 1
+            ? 'Hotovo je <b>' + fmtN(E.EV) + '</b> ' + E.unit + ', ale k dnešku mělo být <b>' + fmtN(E.PV) +
+              '</b> — skluz zhruba <b>' + fmtN(E.PV - E.EV) + ' ' + E.unit + '</b> práce.'
+            : 'Hotovo je <b>' + fmtN(E.EV) + '</b> ' + E.unit + ' proti plánovaným <b>' + fmtN(E.PV) + '</b>.') +
+          '</div>'
+        : '<div class="hint" style="margin-top:10px">Ulož baseline (⚑ v Plánu), jinak není proti čemu měřit.</div>') +
+      (!E.hasSpent ? '<div class="hint">CPI a EAC nepočítám — chybí skutečně odpracováno. ' +
+        'Doplň u úkolů pole <span class="mono">spent</span> (hodiny), volitelně i ' +
+        '<span class="mono">effort</span> jako plánovanou pracnost. ' +
+        '<button class="chip" onclick="PL.evmHelp()">Jak na to</button></div>' : "") +
+      '</div>';
+
     /* ---- vytížení týmu + zdraví projektů ---- */
     var load = {};
     D.open.forEach(function (x) {
@@ -5744,6 +5825,209 @@ boot();
       }).join("") : '<div class="hint">Nic tady není. Dobrá zpráva.</div>') + '</div></div>';
   }
 
+  PL.evmHelp = function () {
+    toast("EVM: SPI měří harmonogram (EV/PV). CPI potřebuje odpracované hodiny — " +
+      "vyplň u úkolu spent (a effort pro plán). Bez nich CPI nevymýšlím.", "", "Rozumím", function () {});
+  };
+
+  /* ============================================================
+     GATE REVIEW PACK — jedním klikem podklad pro G1–G5
+     Otevřené body, rizika, milníky, EVM, diff proti baseline.
+     Dvě varianty: interní (česky, s poznámkami) a zákaznická
+     (anglicky, bez interních poznámek a citací).
+     ============================================================ */
+  PL.gateOpen = function () {
+    var m = document.getElementById("plGate");
+    if (!m) {
+      m = document.createElement("div"); m.className = "mbg"; m.id = "plGate";
+      document.body.appendChild(m);
+      m.addEventListener("mousedown", function (e) { if (e.target === m) m.classList.remove("show"); });
+    }
+    m.innerHTML = '<div class="modal" style="width:min(820px,96vw)"><h3>Gate review pack</h3>' +
+      '<div class="hint" style="margin-bottom:10px">Podklad pro gate review: otevřené body, rizika, ' +
+      'milníky, EVM a posun proti baseline. Vygeneruje se z dat, nic se nepřepisuje ručně.</div>' +
+      '<div class="frm c3">' +
+      '<div class="field"><label>Projekt</label><select id="plGateProj"></select></div>' +
+      '<div class="field"><label>Gate</label><select id="plGateSel"></select></div>' +
+      '<div class="field"><label>Varianta</label><select id="plGateMode">' +
+      '<option value="int">Interní (česky)</option>' +
+      '<option value="cust">Zákaznická (English)</option></select></div></div>' +
+      '<textarea id="plGateOut" rows="18" class="mono" style="font-size:11.5px;margin-top:10px" ' +
+      'placeholder="Klikni Vygenerovat."></textarea>' +
+      '<div class="row"><button class="btn ghost" onclick="closeModal(\'plGate\')">Zavřít</button>' +
+      '<button class="btn ghost" onclick="PL.gateCopy()">Kopírovat</button>' +
+      '<button class="btn" onclick="PL.gateBuild()">Vygenerovat</button></div></div>';
+    m.classList.add("show");
+    var sel = document.getElementById("plGateProj");
+    sel.innerHTML = '<option value="">všechny projekty</option>' +
+      state.projects.map(function (p) { return '<option value="' + p.id + '">' + esc(p.name) + '</option>'; }).join("");
+    if (activeProject) sel.value = activeProject;
+    // Nabídka gates musí odpovídat vybranému projektu — jinak jde zvolit
+    // kombinaci, která nevrátí nic (G1 z jiného projektu než vybraný).
+    sel.addEventListener("change", PL.gateFillGates);
+    PL.gateFillGates();
+  };
+
+  /** Naplní seznam gates jen těmi, které ve vybraném projektu skutečně jsou. */
+  PL.gateFillGates = function () {
+    var pid = document.getElementById("plGateProj").value;
+    var gsel = document.getElementById("plGateSel");
+    if (!gsel) return;
+    var prev = gsel.value;
+    var gates = {};
+    state.projects.forEach(function (p) {
+      if (pid && p.id !== pid) return;
+      (p.issues || []).forEach(function (i) { if (i.gate) gates[i.gate] = (gates[i.gate] || 0) + 1; });
+    });
+    var gl = Object.keys(gates).sort();
+    gsel.innerHTML = '<option value="">všechny</option>' + gl.map(function (g2) {
+      return '<option value="' + esc(g2) + '">' + esc(g2) + " (" + gates[g2] + ")</option>";
+    }).join("");
+    if (gl.indexOf(prev) >= 0) gsel.value = prev;
+  };
+
+  PL.gateBuild = function () {
+    var pid = document.getElementById("plGateProj").value;
+    var gate = document.getElementById("plGateSel").value;
+    var mode = document.getElementById("plGateMode").value;
+    var en = mode === "cust";
+    var projs = pid ? state.projects.filter(function (p) { return p.id === pid; }) : state.projects;
+    if (!projs.length) return toast("Vyber projekt", true);
+
+    var items = [];
+    projs.forEach(function (p) {
+      (p.issues || []).forEach(function (i) {
+        if (gate && i.gate !== gate) return;
+        items.push({ i: norm(i), p: p });
+      });
+    });
+    if (!items.length) return toast("Pro tento výběr nejsou žádné položky", true);
+
+    var t2 = today();
+    var plan = items.filter(function (x) { return x.i.type !== "decision"; }).map(function (x) { return x.i; });
+    var open = items.filter(function (x) { return x.i.status !== "Done"; });
+    var late = open.filter(function (x) { return x.i.due && x.i.due < t2; });
+    var risks = open.filter(function (x) { return x.i.type === "risk"; });
+    var noOwn = open.filter(function (x) { return !x.i.responsible; });
+    var done = items.filter(function (x) { return x.i.status === "Done"; });
+    var ms = plan.filter(function (i) { return i.milestone || i.gate; })
+      .sort(function (a, b) { return dn(a.due) - dn(b.due); });
+    var E = evm(plan, t2);
+    var res = cpm(plan);
+    var critN = plan.filter(function (i) { return (res[i.id] || {}).crit && i.status !== "Done"; }).length;
+    var c = cfg();
+    var blId = c.blActive || (c.bl.length ? c.bl[c.bl.length - 1].id : "");
+    var diff = blId ? blDiff(blId) : null;
+
+    var L = en
+      ? { title: "GATE REVIEW PACK", proj: "Project", gate: "Gate", date: "Date", by: "Prepared by",
+          sum: "SUMMARY", open: "Open items", late: "Overdue", risk: "Risks", crit: "On critical path",
+          noOwn: "Unassigned", closed: "Closed", ms: "MILESTONES & GATES", evm: "EARNED VALUE",
+          overdue: "OVERDUE ITEMS", risks: "OPEN RISKS", base: "SCHEDULE vs BASELINE",
+          moved: "moved later", sumSlip: "total slip", owner: "owner", due: "due",
+          none: "none", noOwner: "unassigned", gen: "Generated by PM Hub" }
+      : { title: "PODKLAD PRO GATE REVIEW", proj: "Projekt", gate: "Gate", date: "Datum", by: "Zpracoval",
+          sum: "SHRNUTÍ", open: "Otevřených bodů", late: "Po termínu", risk: "Rizik",
+          crit: "Na kritické cestě", noOwn: "Bez odpovědného", closed: "Uzavřeno",
+          ms: "MILNÍKY A GATES", evm: "EARNED VALUE (EVM)", overdue: "BODY PO TERMÍNU",
+          risks: "OTEVŘENÁ RIZIKA", base: "HARMONOGRAM PROTI BASELINE",
+          moved: "posunuto později", sumSlip: "souhrnný posun", owner: "odpovědný", due: "termín",
+          none: "nic", noOwner: "nepřiřazeno", gen: "Vygenerováno z PM Hub" };
+
+    var o = [];
+    o.push(L.title + (gate ? " — " + gate : ""));
+    o.push("=".repeat(64));
+    o.push(L.proj + ": " + (pid ? projs[0].name : projs.map(function (p) { return p.name; }).join(", ")));
+    if (gate) o.push(L.gate + ": " + gate);
+    o.push(L.date + ": " + t2 + (blId ? "   ·   baseline: " + blId : ""));
+    o.push(L.by + ": " + (me.user || "—"));
+    o.push("");
+    o.push(L.sum);
+    o.push("-".repeat(64));
+    o.push("  " + L.open + ": " + open.length + "   |   " + L.late + ": " + late.length +
+      "   |   " + L.risk + ": " + risks.length);
+    o.push("  " + L.crit + ": " + critN + "   |   " + L.noOwn + ": " + noOwn.length +
+      "   |   " + L.closed + ": " + done.length);
+    o.push("");
+
+    o.push(L.evm);
+    o.push("-".repeat(64));
+    var n2 = function (v) { return v === null ? "n/a" : String(Math.round(v * 10) / 10); };
+    o.push("  SPI: " + (E.SPI === null ? "n/a" : (Math.round(E.SPI * 100) / 100).toFixed(2)) +
+      "   EV: " + n2(E.EV) + " " + E.unit + "   PV: " + n2(E.PV) + " " + E.unit +
+      "   BAC: " + n2(E.BAC) + " " + E.unit);
+    o.push("  CPI: " + (E.CPI === null ? "n/a (" + (en ? "no actuals logged" : "chybí odpracováno") + ")"
+      : (Math.round(E.CPI * 100) / 100).toFixed(2)) +
+      (E.EAC === null ? "" : "   EAC: " + n2(E.EAC) + " " + E.unit));
+    o.push("");
+
+    if (ms.length) {
+      o.push(L.ms);
+      o.push("-".repeat(64));
+      ms.slice(0, 25).forEach(function (i) {
+        var dd = dayDiff(t2, i.due);
+        o.push("  " + (i.gate ? "[" + i.gate + "] " : "") + i.due + "  CW" + isoWeek(dn(i.due)) +
+          "  " + (dd < 0 ? dd + "d" : "+" + dd + "d") + "  " + i.title +
+          (i.status === "Done" ? "  [OK]" : ""));
+      });
+      o.push("");
+    }
+
+    if (late.length) {
+      o.push(L.overdue + " (" + late.length + ")");
+      o.push("-".repeat(64));
+      late.sort(function (a, b) { return a.i.due < b.i.due ? -1 : 1; }).slice(0, 30).forEach(function (x) {
+        o.push("  " + (-dayDiff(t2, x.i.due)) + "d   " + x.i.title +
+          "   | " + L.owner + ": " + (x.i.responsible || L.noOwner) + "   | " + L.due + ": " + x.i.due);
+      });
+      o.push("");
+    }
+
+    if (risks.length) {
+      o.push(L.risks + " (" + risks.length + ")");
+      o.push("-".repeat(64));
+      risks.forEach(function (x) {
+        o.push("  [" + (x.i.priority || "Medium") + "] " + x.i.title +
+          (x.i.due ? "   | " + L.due + ": " + x.i.due : "") +
+          (x.i.responsible ? "   | " + L.owner + ": " + x.i.responsible : ""));
+        // interní varianta smí nést kontext, zákaznická ne
+        if (!en && x.i.problem) o.push("        " + x.i.problem);
+      });
+      o.push("");
+    }
+
+    if (diff && diff.moved.length) {
+      var laterN = diff.moved.filter(function (x) { return x.slip > 0; });
+      o.push(L.base + " (" + blId + ")");
+      o.push("-".repeat(64));
+      o.push("  " + L.moved + ": " + laterN.length + "   |   " + L.sumSlip + ": " +
+        (diff.sumSlip > 0 ? "+" : "") + diff.sumSlip + "d");
+      laterN.sort(function (a, b) { return b.slip - a.slip; }).slice(0, 20).forEach(function (x) {
+        o.push("  +" + x.slip + "d   " + x.i.title + "   (" + (x.was.d || x.was.f) + " → " + x.i.due + ")");
+      });
+      o.push("");
+    }
+
+    if (!en && noOwn.length) {
+      o.push(L.noOwn + " (" + noOwn.length + ")");
+      o.push("-".repeat(64));
+      noOwn.slice(0, 15).forEach(function (x) { o.push("  - " + x.i.title); });
+      o.push("");
+    }
+
+    o.push("-".repeat(64));
+    o.push(L.gen + ", " + new Date().toLocaleString(en ? "en-GB" : "cs-CZ") +
+      (blId ? "   ·   baseline " + blId : ""));
+    document.getElementById("plGateOut").value = o.join("\n");
+    toast("Gate review pack vygenerován" + (en ? " (English)" : ""));
+  };
+  PL.gateCopy = function () {
+    var v = document.getElementById("plGateOut").value;
+    if (!v) return toast("Nejdřív vygeneruj", true);
+    navigator.clipboard.writeText(v).then(function () { toast("Zkopírováno"); },
+      function () { toast("Kopírování selhalo", true); });
+  };
+
   /* ---- prokliky z dashboardu ---- */
   PL.jump = function (kind) {
     fState = kind; fProj = new Set(state.projects.map(function (p) { return p.id; }));
@@ -5778,7 +6062,8 @@ boot();
     easterSunday: easterSunday, czHolidays: czHolidays, holName: holName,
     shutName: shutName, freeWhy: freeWhy, isWknd: isWknd,
     cfg: cfg, blSave: blSave, blActivate: blActivate, blDiff: blDiff,
-    blMigrate: blMigrate, baseOf: baseOf };
+    blMigrate: blMigrate, baseOf: baseOf,
+    evm: evm, plannedFrac: plannedFrac, evmWeight: evmWeight };
 
   window.PL = PL;
   window.renderGantt = render;
