@@ -544,7 +544,7 @@ tr:hover .gantt-today{opacity:.9}
     <p class="sub">Co hoří, co se slíbilo a nestalo, co čeká na tvoje rozhodnutí. Vše napříč projekty.</p>
   </div><div style="display:flex;gap:8px">
     <button class="btn ghost sm" onclick="scanNow()"><svg class="i sm"><use href="#i-cloud"/></svg>Načíst nové zdroje</button>
-    <button class="btn sm" onclick="openModal('meetModal')"><svg class="i sm"><use href="#i-plus"/></svg>Vložit poradu</button>
+    <button class="btn sm" onclick="openActionPlan()"><svg class="i sm"><use href="#i-report"/></svg>Přepis → akční plán</button>
   </div></div>
   <div class="kpis" id="kpis"></div>
   <div id="dnesBody"></div>
@@ -603,7 +603,8 @@ tr:hover .gantt-today{opacity:.9}
     <div>
       <div class="card">
         <div class="side-label" style="padding:0">Přidat poradu</div>
-        <button class="btn" style="width:100%;margin-bottom:7px;justify-content:center" onclick="openModal('meetModal')"><svg class="i sm"><use href="#i-plus"/></svg>Vložit transkript</button>
+        <button class="btn" style="width:100%;margin-bottom:7px;justify-content:center" onclick="openActionPlan()"><svg class="i sm"><use href="#i-report"/></svg>Přepis → akční plán</button>
+        <button class="btn ghost" style="width:100%;margin-bottom:7px;justify-content:center" onclick="openModal('meetModal')"><svg class="i sm"><use href="#i-plus"/></svg>Vložit transkript (rovnou)</button>
         <button class="btn ghost" style="width:100%;margin-bottom:7px;justify-content:center" onclick="openDrive()"><svg class="i sm"><use href="#i-cloud"/></svg>Načíst z Drive</button>
         <button class="btn ghost" style="width:100%;margin-bottom:7px;justify-content:center" onclick="openSheetImport()"><svg class="i sm"><use href="#i-list"/></svg>Import akčního plánu ze Sheets</button>
         <div class="field" style="margin-bottom:7px"><label>Jazyk diktování</label>
@@ -730,6 +731,55 @@ tr:hover .gantt-today{opacity:.9}
     <textarea id="mText" rows="11" class="mono" style="font-size:11.5px" placeholder="David Štulík: Run@Rate test proběhl úspěšně.&#10;Martin Kander: Do pátku zajistím uvolnění CAD dat pro G3.&#10;David Štulík: Hrozí zpoždění dodávek optik z Asie."></textarea></div>
   <div class="row"><button class="btn ghost" onclick="closeModal('meetModal')">Zrušit</button>
     <button class="btn" onclick="saveMeeting()">Uložit a vytěžit</button></div>
+</div></div>
+
+<div class="mbg" id="apModal"><div class="modal" style="width:min(1080px,97vw)" role="dialog" aria-modal="true" aria-label="Přepis na akční plán">
+  <h3 id="apHead">Přepis porady → akční plán</h3>
+  <div id="apStep1">
+    <div class="frm c3">
+      <div class="field"><label>Projekt</label><select id="apProj"></select></div>
+      <div class="field" style="grid-column:span 2"><label>Název porady</label>
+        <input id="apTitle" placeholder="IVC weekly CW32"></div>
+    </div>
+    <div class="frm c3" style="margin-top:9px">
+      <div class="field"><label>Datum porady</label><input id="apDate" type="date"></div>
+      <div class="field" style="grid-column:span 2"><label>Termíny se počítají od data porady</label>
+        <div class="hint" style="margin-top:6px">„do pátku", „příští týden", „do 15.3." se převede na skutečné datum.</div></div>
+    </div>
+    <div class="field" style="margin-top:9px"><label>Celý přepis</label>
+      <textarea id="apText" rows="12" class="mono" style="font-size:11.5px"
+        placeholder="Vlož celý přepis. Nejlépe ve formátu „Jméno: text“ — pak Hub pozná, kdo co slíbil.&#10;&#10;David Štulík: Dobré ráno, začneme statusem k G3.&#10;Martin Kander: Do pátku zajistím uvolnění CAD dat pro variantu G3.&#10;Jana Dvořáková: Hrozí zpoždění dodávek optik z Asie."></textarea>
+      <div class="hint" id="apStat"></div></div>
+    <div class="row">
+      <button class="btn ghost" onclick="closeModal('apModal')">Zrušit</button>
+      <button class="btn" onclick="apExtract()">Vytěžit akční plán</button>
+    </div>
+  </div>
+
+  <div id="apStep2" hidden>
+    <div class="kpis" id="apKpis"></div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:9px">
+      <button class="btn ghost sm" onclick="apPick('all')">Vybrat vše</button>
+      <button class="btn ghost sm" onclick="apPick('sure')">Jen jisté</button>
+      <button class="btn ghost sm" onclick="apPick('none')">Zrušit výběr</button>
+      <span class="sep" style="width:1px;height:18px;background:var(--line)"></span>
+      <button class="btn ghost sm" onclick="apGemini()" title="Přesnější vytěžení přes Gemini">✨ Zpracovat v Gemini</button>
+      <span class="hint" id="apSel" style="margin:0 0 0 auto"></span>
+    </div>
+    <div class="card p0" style="max-height:46vh;overflow:auto"><table id="apTable" style="min-width:940px">
+      <thead><tr>
+        <th style="width:34px"></th><th style="width:62px">Typ</th><th>Akce / úkol</th>
+        <th style="width:150px">Pilot</th><th style="width:132px">Termín</th>
+        <th style="width:70px">Jistota</th><th style="width:34px"></th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+    <div class="hint">Název, pilota i termín můžeš přepsat přímo v tabulce. Do plánu půjde jen zaškrtnuté.
+      Přepis se uloží vždy, ať je vidět původ.</div>
+    <div class="row">
+      <button class="btn ghost" onclick="apBack()">← Zpět na přepis</button>
+      <button class="btn" onclick="apAdd()">Přidat vybrané do plánu</button>
+    </div>
+  </div>
 </div></div>
 
 <div class="mbg" id="issModal"><div class="modal" style="width:min(560px,96vw)" role="dialog" aria-modal="true" aria-label="Issue">
@@ -1594,6 +1644,158 @@ function ingestMeeting(p, o){
   }
   return res;
 }
+/* ============================================================
+   PŘEPIS → AKČNÍ PLÁN
+   Vlož celý přepis, Hub z něj vytěží akce s pilotem a termínem,
+   ty je zkontroluješ, přepíšeš a zaškrtneš, co má jít do Plánu.
+   Do plánu jde JEN zaškrtnuté — přepis se uloží vždy kvůli původu.
+   ============================================================ */
+let apCand = [], apBlocks = [], apMeta = null;
+
+function openActionPlan(){
+  if(!state.projects.length) return toast("Nejdřív vytvoř projekt",true);
+  fillProjSelect(document.getElementById("apProj"));
+  document.getElementById("apDate").value=today();
+  document.getElementById("apTitle").value="";
+  document.getElementById("apText").value="";
+  document.getElementById("apStat").textContent="";
+  apBack();
+  openModal("apModal");
+}
+function apBack(){
+  document.getElementById("apStep1").hidden=false;
+  document.getElementById("apStep2").hidden=true;
+  document.getElementById("apHead").textContent="Přepis porady → akční plán";
+}
+
+function apExtract(){
+  const p=projById(document.getElementById("apProj").value);
+  if(!p) return toast("Vyber projekt",true);
+  const raw=document.getElementById("apText").value;
+  if(!raw.trim()) return toast("Vlož přepis porady",true);
+  const title=document.getElementById("apTitle").value.trim()||"Porada "+today();
+  const date=document.getElementById("apDate").value||today();
+
+  apBlocks=parseTranscript(raw);
+  if(!apBlocks.length) return toast("Z textu se nepodařilo přečíst žádné repliky",true);
+
+  const participants=Array.from(new Set(apBlocks.map(b=>b.speaker).filter(s=>s&&s!=="—")));
+  apMeta={ pid:p.id, title, date, participants, mid:uid() };
+
+  const found=extractIssues(apBlocks,{date,project:p.name,source:title,
+    meetingId:apMeta.mid,participants});
+
+  // předvybereme, co je dost jisté; zbytek necháme na tobě
+  apCand=found.map(i=>({ i, on: (i.confidence||0)>=REVIEW_THRESHOLD }));
+  if(!apCand.length){
+    toast("Z přepisu nevyplynula žádná akce. Zkus „Zpracovat v Gemini“.",true);
+  }
+  document.getElementById("apStep1").hidden=true;
+  document.getElementById("apStep2").hidden=false;
+  document.getElementById("apHead").textContent="Akční plán z porady „"+title+"“";
+  apRender();
+}
+
+function apRender(){
+  const on=apCand.filter(c=>c.on).length;
+  const sure=apCand.filter(c=>(c.i.confidence||0)>=REVIEW_THRESHOLD).length;
+  const withOwner=apCand.filter(c=>c.i.responsible).length;
+  const withDue=apCand.filter(c=>c.i.due).length;
+  document.getElementById("apKpis").innerHTML=[
+    kpi("Nalezeno akcí",apCand.length,"info",apBlocks.length+" replik · "+
+      (apMeta?apMeta.participants.length:0)+" účastníků"),
+    kpi("S pilotem",withOwner,withOwner?"ok":"warn","kdo to má"),
+    kpi("S termínem",withDue,withDue?"ok":"warn","dopočteno z porady"),
+    kpi("Jistých",sure,"ok","nad prahem "+REVIEW_THRESHOLD+" %")
+  ].join("");
+  document.getElementById("apSel").textContent="vybráno "+on+" z "+apCand.length;
+
+  const tb=document.querySelector("#apTable tbody");
+  if(!apCand.length){
+    tb.innerHTML='<tr><td colspan="7"><div class="empty"><b>Nic k vytěžení</b>'+
+      'Pravidlové vytěžení si se spontánní mluvou neporadí vždy. '+
+      'Zkus „Zpracovat v Gemini“ — vrátí přesnější akce.</div></td></tr>';
+    return;
+  }
+  tb.innerHTML=apCand.map((c,n)=>{
+    const i=c.i, conf=i.confidence==null?100:i.confidence;
+    const low=conf<REVIEW_THRESHOLD;
+    return '<tr'+(c.on?'':' style="opacity:.5"')+'>'+
+      '<td><input type="checkbox" '+(c.on?"checked":"")+' onchange="apToggle('+n+',this.checked)" '+
+        'aria-label="Přidat do plánu"></td>'+
+      '<td><select class="st-sel" onchange="apSet('+n+',\'type\',this.value)" aria-label="Typ">'+
+        ["task","action","risk","decision"].map(t=>'<option value="'+t+'"'+(i.type===t?" selected":"")+'>'+
+          ({task:"Úkol",action:"Akce",risk:"Riziko",decision:"Rozhod"})[t]+'</option>').join("")+'</select></td>'+
+      '<td><input class="inl ttl" value="'+esc(i.title)+'" aria-label="Název" '+
+        'onchange="apSet('+n+',\'title\',this.value)">'+
+        (i.prov&&i.prov.quote?'<div class="hint" style="margin-top:2px">„'+esc(i.prov.quote).slice(0,150)+'"'+
+          (i.prov.speaker?' — <b>'+esc(i.prov.speaker)+'</b>':"")+'</div>':"")+'</td>'+
+      '<td><input class="inl" value="'+esc(i.responsible||"")+'" placeholder="nikdo" '+
+        'aria-label="Pilot" onchange="apSet('+n+',\'responsible\',this.value)"></td>'+
+      '<td><input class="inl mono" type="date" value="'+(i.due||"")+'" '+
+        'aria-label="Termín" onchange="apSet('+n+',\'due\',this.value)"></td>'+
+      '<td><span class="conf">'+conf+'</span><span class="confbar"><i class="'+(low?"low":"")+
+        '" style="width:'+conf+'%"></i></span></td>'+
+      '<td><button class="rowbtn no" onclick="apDrop('+n+')" title="Zahodit" aria-label="Zahodit">'+
+        '<svg class="i sm"><use href="#i-trash"/></svg></button></td></tr>';
+  }).join("");
+}
+function apToggle(n,v){ if(apCand[n]){ apCand[n].on=v; apRender(); } }
+function apSet(n,f,v){
+  if(!apCand[n]) return;
+  apCand[n].i[f]=v;
+  if(f==="title") apCand[n].i.fp=fingerprint(v);
+}
+function apDrop(n){ apCand.splice(n,1); apRender(); }
+function apPick(mode){
+  apCand.forEach(c=>{
+    c.on = mode==="all" ? true : mode==="none" ? false
+      : (c.i.confidence||0)>=REVIEW_THRESHOLD;
+  });
+  apRender();
+}
+
+/** Přesnější vytěžení přes Gemini — použije stejný most jako u archivu porad. */
+function apGemini(){
+  if(!apMeta) return;
+  const names=apMeta.participants;
+  gemMeetingId=null; gemCand=null;
+  gemPrompt=geminiPrompt({title:apMeta.title,date:apMeta.date},names,apBlocks);
+  document.getElementById("gemJson").value="";
+  document.getElementById("gemPrev").innerHTML="";
+  document.getElementById("gemLen").textContent=Math.round(gemPrompt.length/1000)+" tis. znaků";
+  window._apGemini=true;                    // odpověď se vrátí do tabulky, ne rovnou do projektu
+  openModal("gemModal");
+}
+
+/** Uloží poradu a přidá do plánu JEN zaškrtnuté akce. */
+function apAdd(){
+  if(!apMeta) return;
+  const p=projById(apMeta.pid);
+  if(!p) return toast("Projekt už neexistuje",true);
+  const chosen=apCand.filter(c=>c.on).map(c=>c.i);
+
+  // porada se uloží vždy — bez ní by u akcí nebyl původ
+  p.meetings.unshift({ id:apMeta.mid, title:apMeta.title, date:apMeta.date,
+    source:"přepis", driveId:"", blockCount:apBlocks.length,
+    tt:talkingTime(apBlocks), participants:apMeta.participants });
+  putBlocks(apMeta.mid, apBlocks);
+
+  let added=0, merged=0;
+  if(chosen.length){
+    const res=mergeIssues(p.issues, chosen);
+    p.issues.push(...res.added);
+    added=res.added.length; merged=res.merged;
+  }
+  activeProject=p.id; activeMeeting=apMeta.mid;
+  save(); renderAll(); closeModal("apModal");
+  toast("Porada uložena · "+added+" akcí do plánu"+
+    (merged?" · "+merged+" navázáno na existující":"")+
+    (apCand.length-chosen.length?" · "+(apCand.length-chosen.length)+" nezařazeno":""));
+  apCand=[]; apBlocks=[]; apMeta=null;
+  go("plan");
+}
+
 function delMeeting(id,ev){
   if(ev) ev.stopPropagation();
   const p=proj(); if(!p) return;
@@ -2640,6 +2842,31 @@ function geminiParse(){
   const list=Array.isArray(o)?o:(o.issues||[]);
   if(!list.length) return toast("V odpovědi nejsou žádné issues",true);
 
+  // Když jsme přišli z „Přepis → akční plán“, vrátíme se do tabulky ke kontrole.
+  if(window._apGemini && apMeta){
+    const src2="Gemini · "+apMeta.title;
+    const TY=["task","action","risk","decision"];
+    const cand=list.map(x=>{
+      const t=shortenTitle(String(x.title||"").trim(),95);
+      if(!t) return null;
+      return { id:uid(), type:TY.indexOf(x.type)>=0?x.type:"task", project:(projById(apMeta.pid)||{}).name||"",
+        title:t, problem:String(x.problem||"").trim(), responsible:String(x.responsible||"").trim(),
+        from:apMeta.date, due:/^\d{4}-\d{2}-\d{2}$/.test(x.due||"")?x.due:"",
+        gate:"", priority:["High","Medium","Low"].indexOf(x.priority)>=0?x.priority:"Medium",
+        status:"Open", source:src2, confidence:90, review:false, fp:fingerprint(t),
+        firstSeen:apMeta.date,
+        occurrences:[{date:apMeta.date,meetingId:apMeta.mid,source:src2}],
+        prov:{meetingId:apMeta.mid,source:src2,speaker:String(x.responsible||""),
+              quote:String(x.quote||x.title||"").slice(0,240)} };
+    }).filter(Boolean);
+    if(!cand.length) return toast("Gemini nevrátila použitelné akce",true);
+    apCand=cand.map(i=>({i,on:true}));
+    window._apGemini=false;
+    closeModal("gemModal");
+    apRender();
+    return toast("Gemini: "+cand.length+" akcí načteno ke kontrole");
+  }
+
   const p=proj(); const m=(p.meetings||[]).find(x=>x.id===gemMeetingId);
   const src="Gemini · "+(m?m.title:"přepis");
   const TYPES=["task","action","risk","decision"];
@@ -3234,6 +3461,7 @@ function palQuery(q){
     {k:"Přejít",t:"Reporty",fn:()=>go("reporty")},
     {k:"Přejít",t:"Nastavení",fn:()=>go("nastaveni")},
     {k:"Akce",t:"Nový projekt",fn:()=>openModal("projModal")},
+    {k:"Akce",t:"Přepis → akční plán",fn:openActionPlan},
     {k:"Akce",t:"Vložit poradu",fn:()=>openModal("meetModal")},
     {k:"Akce",t:"Nový issue",fn:()=>openIssueModal()},
     {k:"Akce",t:"Načíst nové zdroje",fn:scanNow},
@@ -5750,6 +5978,7 @@ boot();
       '<p class="sub">Stav portfolia na jedné obrazovce. Všechno je proklik — čísla vedou do Issues, ' +
       'jména do plánu, zdroje do porady, e-mailu nebo Chatu.</p></div>' +
       '<div style="display:flex;gap:7px"><button class="btn ghost sm" onclick="scanNow()">↻ Načíst zdroje</button>' +
+      '<button class="btn ghost sm" onclick="openActionPlan()" title="Vlož přepis a vytěž akční plán">📝 Přepis → plán</button>' +
       '<button class="btn ghost sm" onclick="PL.gateOpen()" title="Podklad pro gate review G1–G5">📋 Gate review</button>' +
       '<button class="btn sm" onclick="PL.sync()">🔄 Sync</button></div></div>' +
       '<div class="dash" id="dashBody"></div>';

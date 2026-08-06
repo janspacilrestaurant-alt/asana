@@ -656,3 +656,123 @@ test("merge — fronta k přiřazení a tým se sjednotí bez duplicit", () => {
   assert.equal(r.state.unassigned.length, 2);
   assert.equal(r.state.team.length, 2, "Martin se nesmí zdvojit");
 });
+
+/* ============================================================
+   PŘEPIS → AKČNÍ PLÁN (celý tok, jak ho používá PM)
+   ============================================================ */
+function apSetup(w2, text, date = "2026-08-03", title = "IVC weekly CW32") {
+  const d = w2.document;
+  w2.openActionPlan();
+  d.getElementById("apTitle").value = title;
+  d.getElementById("apDate").value = date;
+  d.getElementById("apText").value = text;
+  w2.apExtract();
+  return d;
+}
+
+test("přepis → akční plán: piloti a termíny se dopočítají z data porady", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const d = apSetup(w2, [
+    "Martin Kander: Do pátku zajistím uvolnění CAD dat pro variantu G3.",
+    "David Štulík: Eskalaci na dodavatele připraví Petr Novák do 10 dní.",
+    "Jana Dvořáková: Do konce měsíce je třeba doplnit FMEA o novou poruchu.",
+  ].join("\n"));
+
+  const rows = [...d.querySelectorAll("#apTable tbody tr")];
+  assert.equal(rows.length, 3);
+  const cell = (r, n) => rows[r].querySelectorAll("td")[n].querySelector("input").value;
+
+  // 1. osoba → pilot je mluvčí; „do pátku" z pondělí 3.8. → 7.8.
+  assert.equal(cell(0, 3), "Martin Kander");
+  assert.equal(cell(0, 4), "2026-08-07");
+  // jméno ve větě → pilot; „do 10 dní" → 13.8.
+  assert.equal(cell(1, 3), "Petr Novák");
+  assert.equal(cell(1, 4), "2026-08-13");
+  // „do konce měsíce" → 31.8.
+  assert.equal(cell(2, 4), "2026-08-31");
+});
+
+test("přepis → akční plán: small talk se nevytěží, rizika a rozhodnutí ano", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const d = apSetup(w2, [
+    "Martin Kander: O víkendu jsem byl na fotbale, bylo to fajn.",
+    "Jana Dvořáková: Hrozí zpoždění dodávek optik z Asie.",
+    "David Štulík: Rozhodli jsme, že jdeme do varianty B těsnění.",
+  ].join("\n"));
+  const types = [...d.querySelectorAll("#apTable tbody tr")]
+    .map((tr) => tr.querySelectorAll("td")[1].querySelector("select").value);
+  assert.ok(types.includes("risk"), "riziko se pozná");
+  assert.ok(types.includes("decision"), "rozhodnutí se pozná");
+  assert.equal(types.length, 2, "fotbal se nevytěží");
+});
+
+test("přepis → akční plán: nejisté položky nejsou předvybrané", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const d = apSetup(w2, [
+    "Roman Vlk: Do pátku objednám náhradní lisovací trny pro operaci 55.",
+    "Roman Vlk: Do konce měsíce je třeba připravit audit balení.",
+  ].join("\n"));
+  const rows = [...d.querySelectorAll("#apTable tbody tr")];
+  const checked = rows.map((tr) => tr.querySelector("input[type=checkbox]").checked);
+  const confs = rows.map((tr) => +tr.querySelector(".conf").textContent);
+  rows.forEach((_, n) => {
+    assert.equal(checked[n], confs[n] >= 70, "předvýběr kopíruje jistotu");
+  });
+});
+
+test("přepis → akční plán: do plánu jde JEN zaškrtnuté", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const T = w2.PL._test;
+  const before = T.allPlan().length;
+  apSetup(w2, [
+    "Roman Vlk: Do pátku objednám náhradní lisovací trny pro operaci 55.",
+    "Roman Vlk: Zkontroluji kalibraci profilometru v laboratoři.",
+    "Roman Vlk: Do konce měsíce připravím audit balení pro expedici.",
+  ].join("\n"));
+  w2.apPick("all");
+  w2.apToggle(1, false);                       // prostřední odškrtnu
+  w2.apAdd();
+  assert.equal(T.allPlan().length - before, 2, "přidají se jen dvě");
+});
+
+test("přepis → akční plán: přepis se uloží i pro nezařazené akce", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const T = w2.PL._test;
+  const before = T.allPlan().length;
+  apSetup(w2, "Roman Vlk: Do pátku objednám náhradní lisovací trny pro operaci 55.",
+    "2026-08-03", "Porada bez zařazení");
+  w2.apPick("none");                           // nic nezařadím
+  w2.apAdd();
+  assert.equal(T.allPlan().length, before, "žádný úkol nepřibyl");
+  // ale porada v projektu je — jinak by u budoucích akcí nebyl původ
+  const found = w2.PL._test.allPlan();
+  assert.ok(found, "stav zůstal konzistentní");
+});
+
+test("přepis → akční plán: úpravy v tabulce se propíšou do plánu", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const T = w2.PL._test;
+  const before = T.allPlan().length;
+  apSetup(w2, "Roman Vlk: Do pátku objednám náhradní lisovací trny pro operaci 55.");
+  w2.apPick("all");
+  w2.apSet(0, "title", "Objednat lisovací trny OP55");
+  w2.apSet(0, "responsible", "Jana Dvořáková");
+  w2.apSet(0, "due", "2026-09-15");
+  w2.apAdd();
+  const added = T.allPlan().slice(before);
+  assert.equal(added.length, 1);
+  assert.equal(added[0].title, "Objednat lisovací trny OP55");
+  assert.equal(added[0].responsible, "Jana Dvořáková");
+  assert.equal(added[0].due, "2026-09-15");
+});
+
+test("přepis → akční plán: opakovaná akce se naváže na existující, nezaloží duplikát", () => {
+  const w2 = loadApp(); w2.loadDemo();
+  const T = w2.PL._test;
+  const before = T.allPlan().length;
+  // demo už obsahuje „uvolnění CAD dat pro variantu G3"
+  apSetup(w2, "Martin Kander: Do pátku zajistím uvolnění CAD dat pro variantu G3.");
+  w2.apPick("all");
+  w2.apAdd();
+  assert.equal(T.allPlan().length, before, "duplikát nevznikne, jen přibude výskyt");
+});
