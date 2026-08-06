@@ -1838,17 +1838,54 @@ function apPick(mode){
   apRender();
 }
 
-/** Přesnější vytěžení přes Gemini — použije stejný most jako u archivu porad. */
+/** Přesnější vytěžení přes Gemini.
+ *  Když je na serveru klíč, voláme model přímo (data jdou Google → Google
+ *  a server výstup ověří proti přepisu). Bez klíče spadneme na ruční most. */
 function apGemini(){
   if(!apMeta) return;
   const names=apMeta.participants;
-  gemMeetingId=null; gemCand=null;
-  gemPrompt=geminiPrompt({title:apMeta.title,date:apMeta.date},names,apBlocks);
-  document.getElementById("gemJson").value="";
-  document.getElementById("gemPrev").innerHTML="";
-  document.getElementById("gemLen").textContent=Math.round(gemPrompt.length/1000)+" tis. znaků";
-  window._apGemini=true;                    // odpověď se vrátí do tabulky, ne rovnou do projektu
-  openModal("gemModal");
+
+  if(!IS_GAS || !settings.hasGemini){
+    gemMeetingId=null; gemCand=null;
+    gemPrompt=geminiPrompt({title:apMeta.title,date:apMeta.date},names,apBlocks);
+    document.getElementById("gemJson").value="";
+    document.getElementById("gemPrev").innerHTML="";
+    document.getElementById("gemLen").textContent=Math.round(gemPrompt.length/1000)+" tis. znaků";
+    window._apGemini=true;                  // odpověď se vrátí do tabulky
+    openModal("gemModal");
+    if(IS_GAS) toast("Gemini nemá klíč — použij ruční most, nebo doplň GEMINI_API_KEY",true);
+    return;
+  }
+
+  const raw=apBlocks.map(b=>b.speaker+": "+b.text).join("\n");
+  const warn=document.getElementById("apWarn");
+  if(warn) warn.innerHTML='<div class="banner"><svg class="i"><use href="#i-clock"/></svg>'+
+    '<span>Gemini čte přepis a ověřuje citace… u dlouhé porady to může trvat i minutu.</span></div>';
+
+  srv("geminiExtract",[raw,JSON.stringify({title:apMeta.title,date:apMeta.date,participants:names})],r=>{
+    if(!r||r.error){ apRender(); return toast((r&&r.error)||"Gemini selhala",true); }
+    if(!r.items.length){
+      apRender();
+      return toast("Gemini nenašla nic doložitelného — z "+r.stats.returned+
+        " návrhů neprošla citací ani jedna.",true);
+    }
+    const src="Gemini · "+apMeta.title;
+    apCand=r.items.map(x=>({ on:x.confidence>=REVIEW_THRESHOLD, i:{
+      id:uid(), type:x.type, project:(projById(apMeta.pid)||{}).name||"", title:x.title,
+      problem:x.problem||"", responsible:x.responsible||"", from:apMeta.date, due:x.due||"",
+      gate:"", priority:x.priority||"Medium", status:"Open", source:src,
+      confidence:x.confidence, review:x.confidence<REVIEW_THRESHOLD, fp:fingerprint(x.title),
+      firstSeen:apMeta.date,
+      occurrences:[{date:apMeta.date,meetingId:apMeta.mid,source:src}],
+      prov:{meetingId:apMeta.mid,source:src,speaker:x.responsible||"",quote:x.quote||""} }}));
+    if(r.summary && apMeta) apMeta.summary=r.summary;
+    apRender();
+    const d=r.stats.dropped;
+    const zah=d.ungrounded+d.badDate+d.badOwner+d.empty;
+    toast("Gemini ("+r.stats.model+"): "+r.stats.verified+" ověřených akcí"+
+      (zah?" · "+zah+" zahozeno (nedoloženo citací nebo špatná data)":"")+
+      (r.stats.partial?" · část přepisu selhala":""));
+  },e=>{ apRender(); toast("Gemini: "+e.message,true); });
 }
 
 /** Uloží poradu a přidá do plánu JEN zaškrtnuté akce. */

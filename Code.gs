@@ -1818,3 +1818,354 @@ function testSources() {
   Logger.log(txt);
   return txt;
 }
+
+/** ============================================================
+ *  GEMINI — SERVEROVÉ VYTĚŽENÍ ZÁPISU Z PŘEPISU
+ *
+ *  Proč server a ne prohlížeč: klíč zůstane v PropertiesService, data jdou
+ *  Google → Google (UrlFetchApp na generativelanguage.googleapis.com) a
+ *  uživatel nemusí nic kopírovat do gemini.google.com a zpět.
+ *
+ *  Spolehlivost nestojí na promptu, ale na OVĚŘENÍ výstupu. Model může
+ *  vymyslet cokoli; my pustíme dál jen to, co se dá doložit:
+ *    1) STRUKTUROVANÝ VÝSTUP — responseSchema místo doufání v čistý JSON
+ *    2) UKOTVENÍ CITACÍ — každá položka nese doslovnou větu z přepisu;
+ *       server ověří, že ta věta v přepisu SKUTEČNĚ je. Když ne → zahodí se.
+ *       Tohle je nejúčinnější a přitom deterministická pojistka proti výmyslu.
+ *    3) UZAVŘENÝ SEZNAM JMEN — odpovědný smí být jen účastník porady
+ *    4) KONTROLA DATUMŮ — termín musí být ISO a v rozumném okně od porady
+ *    5) ZDRŽENLIVOST — radši míň jistých bodů; každý nese confidence
+ *    6) CHUNKOVÁNÍ s překryvem u dlouhých přepisů (limit 6 min běhu)
+ *  ============================================================ */
+
+var GEM_API = "https://generativelanguage.googleapis.com/v1beta/models/";
+var GEM_CHUNK_CHARS = 14000;   // ~4k tokenů na dávku, bezpečně pod limitem běhu
+var GEM_OVERLAP = 800;         // překryv, ať se závazek na hraně neztratí
+var GEM_MAX_CHUNKS = 8;
+
+function geminiKey_() {
+  return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY") || "";
+}
+function geminiModel_() {
+  return PropertiesService.getScriptProperties().getProperty("GEMINI_MODEL") || "gemini-2.0-flash";
+}
+
+/** Schéma odpovědi — model nemůže vrátit nic jiného než tohle. */
+function gemSchema_() {
+  return {
+    type: "OBJECT",
+    properties: {
+      summary: { type: "STRING", description: "3–5 vět, co se na poradě probralo" },
+      items: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            type: { type: "STRING", enum: ["task", "action", "risk", "decision"] },
+            title: { type: "STRING", description: "Stručně česky, max 90 znaků, ne doslovný přepis" },
+            problem: { type: "STRING", description: "Kontext nebo příčina; prázdné, když není" },
+            responsible: { type: "STRING", description: "Jméno POUZE ze seznamu účastníků; jinak prázdné" },
+            due: { type: "STRING", description: "YYYY-MM-DD nebo prázdné" },
+            priority: { type: "STRING", enum: ["High", "Medium", "Low"] },
+            confidence: { type: "INTEGER", description: "0–100, jak jistý si tím jsi" },
+            quote: { type: "STRING", description: "DOSLOVNÁ věta z přepisu, ze které to vyplývá" }
+          },
+          required: ["type", "title", "quote", "confidence"],
+          propertyOrdering: ["type", "title", "problem", "responsible", "due", "priority", "confidence", "quote"]
+        }
+      }
+    },
+    required: ["items"],
+    propertyOrdering: ["summary", "items"]
+  };
+}
+
+function gemPrompt_(chunkText, meta, part, total) {
+  return [
+    "Jsi asistent projektového manažera ve Valeo (automotive, sériová výroba).",
+    "Níže je ČÁST " + part + " z " + total + " automatického přepisu porady.",
+    "Přepis vznikl rozpoznáváním řeči — obsahuje chyby, přeřeknutí a nedokončené věty.",
+    "Typické zkomoleniny oprav podle kontextu: „QR QC“=QRQC, „isučka“=Isee, „frpr“/„efpír“=FRPR,",
+    "„pívéčka“=PV, „písíbí“=PCB, „fdpr“=FRPR.",
+    "",
+    "ÚKOL: najdi SKUTEČNÉ závazky, rozhodnutí a rizika.",
+    "",
+    "CO NEBRAT (tohle jsou nejčastější chyby):",
+    "- konverzační vata bez předmětu („domluvíme se, uvidíme“, „nějak to vymyslíme“)",
+    "- pouhá ZMÍNKA termínu nebo problému bez toho, že někdo něco udělá",
+    "- otázky a odpovědi typu „jo“, „dobře“, „super“",
+    "- small talk (víkend, fotbal, pozdravy, počasí)",
+    "- obecné stěžování bez konkrétního kroku",
+    "",
+    "CO BRÁT: někdo něco udělá — i nepřímo („tak mu napíšu“, „to vyzvednu“,",
+    "„musíš udělat tu událost“, „připomenu to na IVC“).",
+    "",
+    "PRAVIDLA — dodrž je, jinak je výstup nepoužitelný:",
+    "- quote MUSÍ být DOSLOVNÝ úsek z přepisu níže. Nic nepřeformulovávej.",
+    "  Výstup, jehož citace v přepisu není, se zahazuje.",
+    "- responsible smí být JEN jméno z tohoto seznamu: " + (meta.participants || []).join(", "),
+    "  Když z přepisu nevyplývá jednoznačně kdo, nech PRÁZDNÉ. Nehádej.",
+    "- due dopočítej z data porady (" + meta.date + "): „dneska“=" + meta.date +
+      ", „zítra“=+1 den, „do pátku“=nejbližší pátek, „příští týden“=+7 dní.",
+    "  Když termín nezazněl, nech PRÁZDNÉ. Nevymýšlej datumy.",
+    "- confidence: 90+ jen když je závazek jednoznačný včetně toho kdo;",
+    "  50–70 když je akce jasná, ale chybí kdo nebo do kdy; pod 50 když váháš.",
+    "- RADŠI MÉNĚ POLOŽEK A PŘESNÝCH než hodně nejistých. Když si nejsi jistý, vynech.",
+    "- title česky, stručně, jako úkol — ne přepis věty.",
+    "",
+    "PORADA: " + meta.title + "   DATUM: " + meta.date,
+    "ÚČASTNÍCI: " + (meta.participants || []).join(", "),
+    "",
+    "--- PŘEPIS (část " + part + "/" + total + ") ---",
+    chunkText
+  ].join("\n");
+}
+
+/** Jedno volání modelu se strukturovaným výstupem. */
+function gemCall_(prompt) {
+  var key = geminiKey_();
+  if (!key) throw new Error("Chybí GEMINI_API_KEY ve Script properties.");
+  var url = GEM_API + geminiModel_() + ":generateContent";
+  var payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.1,                 // extrakce, ne tvorba — nízká teplota
+      responseMimeType: "application/json",
+      responseSchema: gemSchema_()
+    }
+  };
+  var res = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    headers: { "x-goog-api-key": key },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+  var code = res.getResponseCode(), body = res.getContentText();
+  if (code === 429) throw new Error("Gemini: překročena kvóta (429). Zkus to za chvíli.");
+  if (code === 403) throw new Error("Gemini: klíč odmítnut (403). Zkontroluj GEMINI_API_KEY.");
+  if (code === 404) throw new Error("Gemini: model „" + geminiModel_() + "“ neexistuje. " +
+    "Spusť listGeminiModels() a nastav GEMINI_MODEL na dostupný.");
+  if (code >= 400) throw new Error("Gemini " + code + ": " + body.slice(0, 300));
+
+  var j;
+  try { j = JSON.parse(body); } catch (e) { throw new Error("Gemini vrátila neplatnou odpověď."); }
+  var cand = (j.candidates || [])[0];
+  if (!cand) throw new Error("Gemini nevrátila žádnou odpověď (možná blokace obsahu).");
+  var txt = ((cand.content || {}).parts || []).map(function (p) { return p.text || ""; }).join("");
+  var out;
+  try { out = JSON.parse(txt); } catch (e) { out = extractJson_(txt); }
+  if (!out) throw new Error("Odpověď Gemini nešla přečíst jako JSON.");
+  return out;
+}
+
+/* ---------- OVĚŘENÍ (tady se láme spolehlivost) ---------- */
+
+function gemNorm_(s) {
+  return String(s || "").toLowerCase()
+    .replace(/[áàâä]/g, "a").replace(/[čç]/g, "c").replace(/ď/g, "d")
+    .replace(/[éěèêë]/g, "e").replace(/[íìîï]/g, "i").replace(/ň/g, "n")
+    .replace(/[óòôö]/g, "o").replace(/ř/g, "r").replace(/š/g, "s")
+    .replace(/ť/g, "t").replace(/[úůùûü]/g, "u").replace(/[ýÿ]/g, "y").replace(/ž/g, "z")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Je citace opravdu v přepisu? Model musí doložit, odkud to má. */
+function gemQuoteFound_(quote, normTranscript) {
+  var q = gemNorm_(quote);
+  if (q.length < 12) return false;                       // moc krátké na doložení
+  if (normTranscript.indexOf(q) >= 0) return true;
+  // přepisy se liší v interpunkci — zkus nejdelší souvislý úsek
+  var words = q.split(" ");
+  for (var len = words.length; len >= 5; len--) {
+    for (var i = 0; i + len <= words.length; i++) {
+      var frag = words.slice(i, i + len).join(" ");
+      if (frag.length >= 25 && normTranscript.indexOf(frag) >= 0) return true;
+    }
+  }
+  return false;
+}
+
+function gemIsoOk_(d) { return /^\d{4}-\d{2}-\d{2}$/.test(String(d || "")); }
+
+/**
+ * Propustí jen doložitelné položky. Vrací {items, dropped:{...}} — počty
+ * zahozených se ukazují uživateli, ať je vidět, co model vyrobil navíc.
+ */
+function gemVerify_(items, transcript, meta) {
+  var normT = gemNorm_(transcript);
+  var names = (meta.participants || []).map(function (n) { return { raw: n, n: gemNorm_(n) }; });
+  var base = meta.date && gemIsoOk_(meta.date) ? new Date(meta.date + "T12:00:00") : new Date();
+  var TYPES = ["task", "action", "risk", "decision"];
+  var PRIOS = ["High", "Medium", "Low"];
+  var out = [], dropped = { ungrounded: 0, empty: 0, badDate: 0, badOwner: 0 };
+
+  (items || []).forEach(function (x) {
+    var title = String(x.title || "").trim();
+    if (title.length < 5) { dropped.empty++; return; }
+
+    // 1) ukotvení citací — bez doložení dál nejde
+    if (!gemQuoteFound_(x.quote, normT)) { dropped.ungrounded++; return; }
+
+    // 2) odpovědný jen ze seznamu účastníků
+    var resp = "";
+    var rn = gemNorm_(x.responsible);
+    if (rn) {
+      var hit = names.filter(function (p) {
+        return p.n === rn || p.n.indexOf(rn) >= 0 || rn.indexOf(p.n) >= 0;
+      })[0];
+      if (hit) resp = hit.raw; else dropped.badOwner++;
+    }
+
+    // 3) termín musí být ISO a v rozumném okně (−30 až +540 dní od porady)
+    var due = "";
+    if (x.due) {
+      if (gemIsoOk_(x.due)) {
+        var d = new Date(x.due + "T12:00:00");
+        var diff = (d - base) / 864e5;
+        if (diff >= -30 && diff <= 540) due = x.due; else dropped.badDate++;
+      } else dropped.badDate++;
+    }
+
+    var conf = parseInt(x.confidence, 10);
+    if (isNaN(conf)) conf = 60;
+    conf = Math.max(5, Math.min(97, conf));
+
+    out.push({
+      type: TYPES.indexOf(x.type) >= 0 ? x.type : "task",
+      title: title.slice(0, 95),
+      problem: String(x.problem || "").trim().slice(0, 300),
+      responsible: resp,
+      due: due,
+      priority: PRIOS.indexOf(x.priority) >= 0 ? x.priority : "Medium",
+      confidence: conf,
+      quote: String(x.quote || "").slice(0, 240)
+    });
+  });
+  return { items: out, dropped: dropped };
+}
+
+/** Rozdělí dlouhý přepis s překryvem, ať se závazek na hraně neztratí. */
+function gemChunks_(text) {
+  var t = String(text || "");
+  if (t.length <= GEM_CHUNK_CHARS) return [t];
+  var out = [], pos = 0;
+  while (pos < t.length && out.length < GEM_MAX_CHUNKS) {
+    var end = Math.min(t.length, pos + GEM_CHUNK_CHARS);
+    if (end < t.length) {                       // řež na konci řádku, ne uprostřed věty
+      var nl = t.lastIndexOf("\n", end);
+      if (nl > pos + GEM_CHUNK_CHARS / 2) end = nl;
+    }
+    out.push(t.slice(pos, end));
+    if (end >= t.length) break;
+    pos = Math.max(pos + 1, end - GEM_OVERLAP);
+  }
+  return out;
+}
+
+/** Shodí duplicity vzniklé překryvem dávek. */
+function gemDedup_(items) {
+  var seen = {}, out = [];
+  items.forEach(function (i) {
+    var k = gemNorm_(i.title).split(" ").slice(0, 6).join(" ");
+    if (!k || seen[k]) return;
+    seen[k] = 1; out.push(i);
+  });
+  return out;
+}
+
+/**
+ * HLAVNÍ VSTUP pro frontend.
+ * geminiExtract(transcript, metaJson) -> {ok, items, summary, stats} | {error}
+ */
+function geminiExtract(transcript, metaJson) {
+  if (!canWrite_()) return { error: "Vytěžení smí spustit jen editor/owner." };
+  if (!geminiKey_()) {
+    return { error: "Gemini není zapojená. V editoru skriptu → Project Settings → " +
+      "Script properties přidej GEMINI_API_KEY." };
+  }
+  var meta;
+  try { meta = typeof metaJson === "string" ? JSON.parse(metaJson) : (metaJson || {}); }
+  catch (e) { meta = {}; }
+  if (!meta.date) meta.date = isoDate_(new Date());
+  if (!meta.title) meta.title = "Porada " + meta.date;
+
+  var text = String(transcript || "");
+  if (text.trim().length < 40) return { error: "Přepis je příliš krátký." };
+
+  var chunks = gemChunks_(text);
+  var all = [], summary = "", errs = [];
+  for (var i = 0; i < chunks.length; i++) {
+    try {
+      var r = gemCall_(gemPrompt_(chunks[i], meta, i + 1, chunks.length));
+      if (r.summary && !summary) summary = String(r.summary).slice(0, 1200);
+      all = all.concat(r.items || []);
+    } catch (e) {
+      errs.push("část " + (i + 1) + ": " + e.message);
+    }
+  }
+  if (!all.length && errs.length) return { error: errs.join(" · ") };
+
+  var v = gemVerify_(all, text, meta);
+  var items = gemDedup_(v.items);
+
+  audit_("geminiExtract", "meeting", meta.title,
+    items.length + " ověřeno / " + all.length + " vráceno · zahozeno: " +
+    v.dropped.ungrounded + " bez citace, " + v.dropped.badDate + " špatné datum");
+
+  return {
+    ok: true, items: items, summary: summary,
+    stats: { returned: all.length, verified: items.length, chunks: chunks.length,
+      dropped: v.dropped, model: geminiModel_(), partial: errs.length ? errs.join(" · ") : "" }
+  };
+}
+
+/** Diagnostika — které modely tvůj klíč vidí. Spusť z editoru. */
+function listGeminiModels() {
+  var key = geminiKey_();
+  if (!key) { Logger.log("Chybí GEMINI_API_KEY."); return "Chybí GEMINI_API_KEY."; }
+  var res = UrlFetchApp.fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+    method: "get", headers: { "x-goog-api-key": key }, muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 400) {
+    var m = "Chyba " + res.getResponseCode() + ": " + res.getContentText().slice(0, 300);
+    Logger.log(m); return m;
+  }
+  var j = JSON.parse(res.getContentText());
+  var out = ["Nastavený model: " + geminiModel_(), "", "Dostupné modely s generateContent:"];
+  (j.models || []).forEach(function (m) {
+    if ((m.supportedGenerationMethods || []).indexOf("generateContent") < 0) return;
+    out.push("  " + String(m.name).replace("models/", "") +
+      "   (vstup " + (m.inputTokenLimit || "?") + " tokenů)");
+  });
+  out.push("", "Nastav jiný: Project Settings → Script properties → GEMINI_MODEL");
+  var txt = out.join("\n");
+  Logger.log(txt);
+  return txt;
+}
+
+/** Zkouška celé cesty na krátkém přepisu — spusť z editoru. */
+function testGeminiExtract() {
+  var demo = [
+    "Martin Kander: Do pátku zajistím uvolnění CAD dat pro variantu G3.",
+    "Jana Dvořáková: Hrozí zpoždění dodávek optik z Asie.",
+    "David Štulík: O víkendu jsem byl na fotbale.",
+    "David Štulík: Eskalaci na dodavatele připraví Petr Novák do 10 dní."
+  ].join("\n");
+  var r = geminiExtract(demo, JSON.stringify({
+    title: "Test", date: isoDate_(new Date()),
+    participants: ["Martin Kander", "Jana Dvořáková", "David Štulík", "Petr Novák"]
+  }));
+  var txt = r.error ? ("CHYBA: " + r.error)
+    : ["Model: " + r.stats.model,
+       "Vráceno modelem: " + r.stats.returned + "   ověřeno: " + r.stats.verified,
+       "Zahozeno bez citace: " + r.stats.dropped.ungrounded +
+       ", špatné datum: " + r.stats.dropped.badDate +
+       ", cizí jméno: " + r.stats.dropped.badOwner, ""]
+      .concat(r.items.map(function (i) {
+        return "  [" + i.type + "] " + i.title + "  | " + (i.responsible || "—") +
+          " | " + (i.due || "—") + " | " + i.confidence + "%";
+      })).join("\n");
+  Logger.log(txt);
+  return txt;
+}
