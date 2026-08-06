@@ -1235,6 +1235,141 @@ function migrate(s){
   });
   return s;
 }
+/* ============================================================
+   TŘÍSLUČOVACÍ MERGE (base / moje / jejich)
+   Dřív konflikt nabídl jen „Načíst jejich verzi" a tím zahodil všechno,
+   co jsi mezitím napsal. Teď se slučuje po JEDNOTLIVÝCH POLÍCH:
+   co jsi změnil ty a oni ne → tvoje; co oni a ty ne → jejich;
+   konflikt hlásíme jen když oba změnili TOTÉŽ pole na jinou hodnotu.
+   ============================================================ */
+let baseJson = "";        // stav, jak ho naposledy viděl server = společný předek
+
+function snapshotBase(){
+  try{ baseJson = JSON.stringify(state); }catch(e){ baseJson = ""; }
+}
+
+/* Skalární pole, která se slučují po jednom. */
+const MERGE_FIELDS = ["type","project","title","problem","responsible","from","due","gate",
+  "priority","status","progress","milestone","ord","notes","source","srcUrl","srcKind",
+  "closedAt","review","confidence","extId","baseFrom","baseDue","effort","spent","fp"];
+/* Pole/objekty — slučují se jako celek (kdo je změnil, ten vyhrává). */
+const MERGE_BLOBS = ["deps","support","occurrences","bl","prov"];
+
+function idxIssues(st){
+  const m = {};
+  (st && st.projects || []).forEach(p => (p.issues||[]).forEach(i => { if(i && i.id) m[i.id] = { i, p }; }));
+  return m;
+}
+function sameVal(a,b){
+  if(a === b) return true;
+  if(a == null && b == null) return true;
+  if(typeof a === "object" || typeof b === "object"){
+    try{ return JSON.stringify(a) === JSON.stringify(b); }catch(e){ return false; }
+  }
+  return false;
+}
+
+/**
+ * Sloučí tři verze stavu. Vrací { state, conflicts[], stats }.
+ * Kostrou je JEJICH stav (server je pravda o tom, co existuje),
+ * do něj se aplikují MOJE změny.
+ */
+function mergeStates(base, mine, theirs){
+  const out = JSON.parse(JSON.stringify(theirs));
+  const B = idxIssues(base), M = idxIssues(mine), T = idxIssues(theirs), O = idxIssues(out);
+  const conflicts = [];
+  const stats = { mineWins:0, theirsKept:0, added:0, readded:0, deleted:0, conflicts:0 };
+
+  // --- projekty, které mám navíc (založil jsem je offline) ---
+  const outProjIds = new Set(out.projects.map(p=>p.id));
+  (mine.projects||[]).forEach(p=>{
+    const inBase = (base.projects||[]).some(x=>x.id===p.id);
+    if(!outProjIds.has(p.id) && !inBase){
+      out.projects.push(JSON.parse(JSON.stringify(p)));
+      stats.added += (p.issues||[]).length;
+    }
+  });
+  const outProj = {};
+  out.projects.forEach(p=>{ outProj[p.id] = p; p.issues = p.issues||[]; p.meetings = p.meetings||[]; });
+
+  // --- issues ---
+  Object.keys(M).forEach(id=>{
+    const mi = M[id].i, bi = B[id] ? B[id].i : null, ti = T[id] ? T[id].i : null;
+
+    if(!ti){
+      if(!bi){                                   // úplně nový u mě → přidat
+        const tgt = outProj[M[id].p.id] || out.projects[0];
+        if(tgt){ tgt.issues.push(JSON.parse(JSON.stringify(mi))); stats.added++; }
+      } else if(!sameVal(JSON.stringify(bi), JSON.stringify(mi))){
+        // oni smazali, ale já jsem to mezitím měnil → radši vrátit a upozornit
+        const tgt = outProj[M[id].p.id] || out.projects[0];
+        if(tgt){ tgt.issues.push(JSON.parse(JSON.stringify(mi))); stats.readded++; }
+        conflicts.push({ id, title: mi.title, field:"(záznam)",
+          mine:"upravil jsi ho", theirs:"smazali ho", kind:"deleted" });
+      }
+      return;
+    }
+
+    const oi = O[id] ? O[id].i : null;
+    if(!oi) return;
+
+    MERGE_FIELDS.concat(MERGE_BLOBS).forEach(f=>{
+      const mv = mi[f], bv = bi ? bi[f] : undefined, tv = ti[f];
+      const meChanged = !sameVal(mv, bv);
+      const theyChanged = !sameVal(tv, bv);
+      if(meChanged && !theyChanged){ oi[f] = mv; stats.mineWins++; }
+      else if(meChanged && theyChanged && !sameVal(mv, tv)){
+        conflicts.push({ id, title: ti.title || mi.title, field:f, mine:mv, theirs:tv, kind:"field" });
+        stats.conflicts++;                       // ponecháme jejich, uživatel rozhodne
+      } else if(theyChanged){ stats.theirsKept++; }
+    });
+  });
+
+  // --- co jsem smazal já ---
+  Object.keys(B).forEach(id=>{
+    if(M[id] || !T[id]) return;                  // pořád mám, nebo smazali taky
+    const bi = B[id].i, ti = T[id].i;
+    if(sameVal(JSON.stringify(bi), JSON.stringify(ti))){
+      const holder = O[id];                      // oni nesáhli → smazat i u nich
+      if(holder){
+        holder.p.issues = holder.p.issues.filter(x=>x.id!==id);
+        stats.deleted++;
+      }
+    } else {
+      conflicts.push({ id, title: ti.title, field:"(záznam)",
+        mine:"smazal jsi ho", theirs:"upravili ho", kind:"deleted" });
+      stats.conflicts++;                         // jejich úprava zůstává
+    }
+  });
+
+  // --- porady: sjednocení podle id ---
+  (mine.projects||[]).forEach(mp=>{
+    const op = outProj[mp.id]; if(!op) return;
+    const have = new Set(op.meetings.map(m=>m.id));
+    (mp.meetings||[]).forEach(m=>{ if(!have.has(m.id)) op.meetings.push(JSON.parse(JSON.stringify(m))); });
+  });
+
+  // --- fronta k přiřazení: sjednocení ---
+  const un = {};
+  [].concat(out.unassigned||[], mine.unassigned||[]).forEach(u=>{ if(u&&u.id) un[u.id]=u; });
+  out.unassigned = Object.values(un);
+
+  // --- tým: sjednocení podle jména ---
+  const tm = {};
+  [].concat(out.team||[], mine.team||[]).forEach(x=>{ if(x&&x.name) tm[x.name]=x; });
+  out.team = Object.values(tm);
+
+  // --- nastavení plánu je lokální pohled → moje; baselines ale sjednotit ---
+  const theirBl = (out.plan && out.plan.bl) || [];
+  out.plan = JSON.parse(JSON.stringify(mine.plan || out.plan || {}));
+  const blMap = {};
+  [].concat(theirBl, (out.plan.bl||[])).forEach(b=>{ if(b&&b.id) blMap[b.id]=b; });
+  out.plan.bl = Object.keys(blMap).sort().map(k=>blMap[k]);
+
+  out.theme = mine.theme || out.theme;
+  return { state: out, conflicts, stats };
+}
+
 let saveTimer=null;
 function save(){
   dirty=true;
@@ -1251,14 +1386,12 @@ function pushState(){
   srv("saveState",[payload,serverRev],res=>{
     if(res && res.ok){
       serverRev=res.rev; state.rev=res.rev; dirty=false;
+      snapshotBase();
       clearBanner("bConflict");
       document.getElementById("saveState").textContent=new Date().toLocaleTimeString("cs-CZ",{hour:"2-digit",minute:"2-digit"});
       document.getElementById("revState").textContent="#"+res.rev;
     } else if(res && res.conflict){
-      banner("bConflict","warn",
-        "Někdo jiný stav mezitím změnil. Tvoje poslední úpravy nejsou uložené.",
-        "Načíst jejich verzi",()=>{ applyServerState(res.json,res.rev); clearBanner("bConflict"); });
-      document.getElementById("saveState").textContent="konflikt";
+      handleConflict(res);
     } else {
       banner("bSave","err","Uložení do Sheets selhalo: "+((res&&res.error)||"neznámá chyba")+" Data máš zatím jen v prohlížeči.",
         "Zkusit znovu",()=>{ clearBanner("bSave"); pushState(); });
@@ -1270,6 +1403,97 @@ function pushState(){
     document.getElementById("saveState").textContent="NEULOŽENO";
   });
 }
+/** Konflikt = někdo uložil dřív. Zkusíme sloučit; tvrdý přepis je až záchranná brzda. */
+let lastConflicts = [];
+function handleConflict(res){
+  let theirs = null;
+  try{ theirs = JSON.parse(res.json); }catch(e){}
+  let base = null;
+  try{ base = baseJson ? JSON.parse(baseJson) : null; }catch(e){}
+
+  if(!theirs || !Array.isArray(theirs.projects) || !base){
+    // Bez společného předka slučovat nelze — nabídneme ruční rozhodnutí.
+    banner("bConflict","warn",
+      "Někdo jiný stav mezitím změnil a chybí společný základ pro sloučení. "+
+      "Stáhni si zálohu, než načteš jejich verzi.",
+      "Načíst jejich verzi",()=>{ applyServerState(res.json,res.rev); clearBanner("bConflict"); });
+    document.getElementById("saveState").textContent="konflikt";
+    return;
+  }
+
+  let m;
+  try{ m = mergeStates(base, state, theirs); }
+  catch(e){
+    banner("bConflict","err","Sloučení selhalo ("+e.message+"). Data máš zatím jen v prohlížeči.",
+      "Stáhnout zálohu", exportData);
+    document.getElementById("saveState").textContent="konflikt";
+    return;
+  }
+
+  state = migrate(m.state);
+  serverRev = res.rev; state.rev = serverRev;
+  lastConflicts = m.conflicts;
+  applyTheme(); renderAll();
+  document.getElementById("revState").textContent="#"+serverRev;
+
+  const s = m.stats;
+  const kept = s.mineWins + s.added + s.readded;
+  if(m.conflicts.length){
+    banner("bConflict","warn",
+      "Sloučeno s cizí verzí — tvoje změny zůstaly ("+kept+"). "+
+      m.conflicts.length+"× jste ale sáhli na totéž pole.",
+      "Ukázat konflikty", showConflicts);
+  } else {
+    clearBanner("bConflict");
+    toast("Někdo pracoval souběžně — sloučeno bez ztráty ("+kept+" tvých změn, "+
+      s.theirsKept+" jejich)");
+  }
+  // sloučený stav rovnou zapiš pod jejich revizí
+  snapshotBase();
+  srv("saveState",[JSON.stringify(state), serverRev], r2=>{
+    if(r2 && r2.ok){
+      serverRev=r2.rev; state.rev=r2.rev; dirty=false; snapshotBase();
+      document.getElementById("saveState").textContent=new Date().toLocaleTimeString("cs-CZ",{hour:"2-digit",minute:"2-digit"});
+      document.getElementById("revState").textContent="#"+r2.rev;
+    } else if(r2 && r2.conflict){
+      handleConflict(r2);                      // někdo byl rychlejší i teď — slučuj dál
+    }
+  });
+}
+
+/** Seznam skutečných kolizí — u každé si vybereš svou nebo jejich hodnotu. */
+function showConflicts(){
+  if(!lastConflicts.length) return toast("Žádné nevyřešené konflikty");
+  let h='<div class="hint" style="margin-bottom:10px">Na těchto polích jste pracovali oba. '+
+    'Teď je uložená <b>jejich</b> hodnota — vyber, kde chceš vrátit svoji.</div>';
+  h+=lastConflicts.map((c,n)=>{
+    const val=v=>esc(String(v==null?"—":(typeof v==="object"?JSON.stringify(v):v))).slice(0,120);
+    return '<div style="padding:9px 0;border-bottom:1px solid var(--line)">'+
+      '<b style="font-size:12.5px">'+esc(c.title||c.id)+'</b>'+
+      '<div class="hint" style="margin:2px 0 6px">pole <span class="mono">'+esc(c.field)+'</span></div>'+
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
+      '<span class="tag n">tvoje</span><span class="mono" style="font-size:11px">'+val(c.mine)+'</span>'+
+      (c.kind==="field"?'<button class="btn ghost sm" onclick="resolveConflict('+n+')">Vrátit moji</button>':"")+
+      '</div>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">'+
+      '<span class="tag g">uloženo</span><span class="mono" style="font-size:11px">'+val(c.theirs)+'</span></div>'+
+      '</div>';
+  }).join("");
+  document.getElementById("provBody").innerHTML=
+    '<h3 class="sect" style="margin-top:0">Souběžné úpravy ('+lastConflicts.length+')</h3>'+h;
+  openModal("provModal");
+}
+function resolveConflict(n){
+  const c=lastConflicts[n]; if(!c) return;
+  const f=findIssue(c.id);
+  if(!f) return toast("Úkol už neexistuje",true);
+  f.i[c.field]=c.mine;
+  lastConflicts.splice(n,1);
+  save(); renderCurrent();
+  if(lastConflicts.length) showConflicts();
+  else { closeModal("provModal"); clearBanner("bConflict"); toast("Konflikty vyřešeny"); }
+}
+
 function applyServerState(json,rev){
   try{
     const o=JSON.parse(json);
@@ -1277,6 +1501,7 @@ function applyServerState(json,rev){
     state=migrate(o); serverRev=rev||o.rev||0; state.rev=serverRev;
     activeProject=state.projects[0]?state.projects[0].id:null;
     activeMeeting=null;
+    snapshotBase();
     applyTheme(); renderAll();
     document.getElementById("revState").textContent="#"+serverRev;
   }catch(e){ toast("Data ze serveru jsou poškozená, pracuji s lokální kopií.",true); }
@@ -3121,6 +3346,10 @@ function applyTheme(){
 /* ============================================================
    START
    ============================================================ */
+/* Test-only export (B7) — merge žije uvnitř bloku, testy na něj jinak nedosáhnou. */
+window._merge = { mergeStates:mergeStates, idxIssues:idxIssues, sameVal:sameVal,
+  snapshotBase:snapshotBase, getBase:()=>baseJson };
+
 function boot(){
   state=migrate(loadLocal());
   applyTheme();
@@ -3146,6 +3375,7 @@ function boot(){
         const o=JSON.parse(b.json);
         if(o&&Array.isArray(o.projects)){
           state=migrate(o); serverRev=b.rev||o.rev||0; state.rev=serverRev;
+          snapshotBase();                 // společný předek pro budoucí merge
           activeProject=state.projects[0]?state.projects[0].id:null;
           // dorovnat přepisy, které přišly ze staré verze uvnitř stavu
           Object.keys(transCache).forEach(k=>srv("saveTranscript",[k,JSON.stringify(transCache[k])]));

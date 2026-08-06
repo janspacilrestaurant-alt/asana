@@ -506,3 +506,153 @@ test("gate review pack — filtr podle gate zúží obsah", () => {
   const out = w2.document.getElementById("plGateOut").value;
   assert.match(out, new RegExp("— " + opts[0]), "nadpis nese vybraný gate");
 });
+
+/* ============================================================
+   TŘÍSLUČOVACÍ MERGE — souběžná editace bez ztráty dat
+   ============================================================ */
+const MG = w._merge;
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+function baseState() {
+  return {
+    theme: "light", unassigned: [], team: [], plan: { bl: [] },
+    projects: [{
+      id: "p1", name: "P0 Test", keywords: [], meetings: [],
+      issues: [
+        { id: "i1", type: "task", project: "P0 Test", title: "Uvolnit CAD data",
+          responsible: "Martin", from: "2026-01-05", due: "2026-01-09",
+          status: "Open", priority: "Medium", progress: 0, deps: [] },
+        { id: "i2", type: "task", project: "P0 Test", title: "Objednat měřidlo",
+          responsible: "", from: "2026-01-05", due: "2026-01-12",
+          status: "Open", priority: "Medium", progress: 0, deps: [] },
+      ],
+    }],
+  };
+}
+const findI = (st, id) => MG.idxIssues(st)[id].i;
+
+test("merge — různá pole téhož úkolu: obě změny přežijí", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  findI(mine, "i1").responsible = "Jana";        // já měním odpovědného
+  findI(theirs, "i1").due = "2026-01-16";        // oni termín
+  const r = MG.mergeStates(base, mine, theirs);
+  const out = findI(r.state, "i1");
+  assert.equal(out.responsible, "Jana", "moje změna se nesmí ztratit");
+  assert.equal(out.due, "2026-01-16", "jejich změna zůstává");
+  assert.equal(r.conflicts.length, 0, "různá pole nejsou konflikt");
+});
+
+test("merge — různé úkoly: nikdo nepřijde o práci", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  findI(mine, "i1").status = "Done";
+  findI(theirs, "i2").responsible = "Petr";
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.equal(findI(r.state, "i1").status, "Done");
+  assert.equal(findI(r.state, "i2").responsible, "Petr");
+  assert.equal(r.conflicts.length, 0);
+});
+
+test("merge — TOTÉŽ pole obou stran je jediný skutečný konflikt", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  findI(mine, "i1").due = "2026-01-20";
+  findI(theirs, "i1").due = "2026-01-30";
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.equal(r.conflicts.length, 1);
+  assert.equal(r.conflicts[0].field, "due");
+  assert.equal(r.conflicts[0].mine, "2026-01-20");
+  assert.equal(r.conflicts[0].theirs, "2026-01-30");
+  assert.equal(findI(r.state, "i1").due, "2026-01-30", "do uložení vyhrává jejich");
+});
+
+test("merge — můj nový úkol se neztratí", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  mine.projects[0].issues.push({ id: "iNew", type: "task", project: "P0 Test",
+    title: "Nový offline úkol", from: "2026-02-02", due: "2026-02-06",
+    status: "Open", priority: "High", progress: 0, deps: [] });
+  findI(theirs, "i1").progress = 40;
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.ok(MG.idxIssues(r.state).iNew, "můj nový úkol musí zůstat");
+  assert.equal(findI(r.state, "i1").progress, 40);
+  assert.equal(r.stats.added, 1);
+});
+
+test("merge — jejich nový úkol se převezme", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  theirs.projects[0].issues.push({ id: "iTheirs", type: "risk", project: "P0 Test",
+    title: "Riziko z porady", from: "2026-02-02", due: "2026-02-06",
+    status: "Open", priority: "High", progress: 0, deps: [] });
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.ok(MG.idxIssues(r.state).iTheirs);
+});
+
+test("merge — smazání se respektuje, jen když druhá strana nesáhla", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  mine.projects[0].issues = mine.projects[0].issues.filter((i) => i.id !== "i2");
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.ok(!MG.idxIssues(r.state).i2, "nedotčené smazání projde");
+  assert.equal(r.stats.deleted, 1);
+});
+
+test("merge — smazal jsem, ale oni to upravili → zůstane a hlásí se", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  mine.projects[0].issues = mine.projects[0].issues.filter((i) => i.id !== "i2");
+  findI(theirs, "i2").responsible = "Jana";
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.ok(MG.idxIssues(r.state).i2, "cizí práce se nesmí smazat potichu");
+  assert.equal(r.conflicts.length, 1);
+  assert.equal(r.conflicts[0].kind, "deleted");
+});
+
+test("merge — oni smazali, já upravil → vrátí se a hlásí se", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  findI(mine, "i2").responsible = "Petr";
+  theirs.projects[0].issues = theirs.projects[0].issues.filter((i) => i.id !== "i2");
+  const r = MG.mergeStates(base, mine, theirs);
+  const back = MG.idxIssues(r.state).i2;
+  assert.ok(back, "moje rozpracovaná změna se nesmí ztratit");
+  assert.equal(back.i.responsible, "Petr");
+  assert.equal(r.stats.readded, 1);
+});
+
+test("merge — vazby a support se slučují jako celek", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  findI(mine, "i2").deps = [{ id: "i1", type: "FS", lag: 0 }];
+  findI(theirs, "i2").priority = "High";
+  const r = MG.mergeStates(base, mine, theirs);
+  const out = findI(r.state, "i2");
+  assert.equal(out.deps.length, 1, "moje vazba zůstala");
+  assert.equal(out.priority, "High", "jejich priorita taky");
+});
+
+test("merge — nový projekt z obou stran přežije", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  mine.projects.push({ id: "pMine", name: "P0 Moje", keywords: [], meetings: [],
+    issues: [{ id: "im", type: "task", project: "P0 Moje", title: "M", from: "2026-01-05",
+      due: "2026-01-06", status: "Open", priority: "Medium", progress: 0, deps: [] }] });
+  theirs.projects.push({ id: "pTheirs", name: "P0 Jejich", keywords: [], meetings: [], issues: [] });
+  const r = MG.mergeStates(base, mine, theirs);
+  const ids = r.state.projects.map((p) => p.id);
+  assert.ok(ids.includes("pMine") && ids.includes("pTheirs"));
+});
+
+test("merge — fronta k přiřazení a tým se sjednotí bez duplicit", () => {
+  const base = baseState();
+  const mine = clone(base), theirs = clone(base);
+  mine.unassigned = [{ id: "u1", meeting: "A" }];
+  theirs.unassigned = [{ id: "u2", meeting: "B" }];
+  mine.team = [{ name: "Martin", email: "" }];
+  theirs.team = [{ name: "Martin", email: "m@valeo.com" }, { name: "Jana", email: "" }];
+  const r = MG.mergeStates(base, mine, theirs);
+  assert.equal(r.state.unassigned.length, 2);
+  assert.equal(r.state.team.length, 2, "Martin se nesmí zdvojit");
+});
