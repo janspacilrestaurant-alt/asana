@@ -776,3 +776,87 @@ test("přepis → akční plán: opakovaná akce se naváže na existující, ne
   w2.apAdd();
   assert.equal(T.allPlan().length, before, "duplikát nevznikne, jen přibude výskyt");
 });
+
+/* ============================================================
+   KVALITA VYTĚŽENÍ NA SPONTÁNNÍ MLUVĚ (regrese)
+   Fixture je anonymizovaný přepis skutečné porady z rozpoznávání
+   řeči. Dřív z něj padalo 6 položek, z toho 4 čirý šum.
+   ============================================================ */
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+const FIXT = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "meeting-spontaneous.txt");
+
+function extractFixture() {
+  const raw = readFileSync(FIXT, "utf8");
+  const w2 = loadApp();
+  const blocks = w2.parseTranscript(raw);
+  const participants = [...new Set(blocks.map((b) => b.speaker).filter((s) => s && s !== "—"))];
+  return {
+    w: w2, blocks,
+    issues: w2.extractIssues(blocks, {
+      date: "2026-08-06", project: "T", source: "t", meetingId: "t", participants,
+    }),
+  };
+}
+
+test("spontánní mluva — konverzační vata se nevytěží jako úkol", () => {
+  const { issues } = extractFixture();
+  const titles = issues.map((i) => i.title.toLowerCase());
+  // tyhle věty dřív procházely jako úkoly a byly to čiré nesmysly
+  assert.ok(!titles.some((t) => t.includes("domluvíme se uvidíme")),
+    "„Domluvíme se uvidíme, co nám tam“ není závazek");
+  assert.ok(!titles.some((t) => t.includes("je ten deadline")),
+    "pouhá zmínka slova deadline není úkol");
+});
+
+test("spontánní mluva — každá vytěžená položka má obsah, ne jen sloveso", () => {
+  const { w: w2, issues } = extractFixture();
+  issues.forEach((i) => {
+    const words = i.title.split(/\s+/).filter(Boolean);
+    assert.ok(words.length >= 3, "název „" + i.title + "“ je příliš prázdný");
+    assert.ok(!/^(domluvíme se uvidíme|protože|no,|o to ne)/i.test(i.title),
+      "název nesmí začínat konverzační vatou: " + i.title);
+  });
+});
+
+test("spontánní mluva — skutečné závazky se neztratí", () => {
+  const { issues } = extractFixture();
+  const all = issues.map((i) => i.title.toLowerCase()).join(" | ");
+  // závazek na sebe („Já musím … připomenout")
+  assert.match(all, /připomenout/, "závazek „musím připomenout“ musí projít");
+  // adresné zadání („musíš udělat tu událost")
+  assert.match(all, /udělat událost|událost na základě/, "adresné zadání musí projít");
+  // slib v 1. osobě („tak se tam připravím")
+  assert.match(all, /připravím/, "slib v 1. osobě musí projít");
+});
+
+test("spontánní mluva — otázky nejsou závazky", () => {
+  const { issues } = extractFixture();
+  issues.forEach((i) => {
+    const q = (i.prov && i.prov.quote) || "";
+    assert.ok(!/\?\s*$/.test(q.trim()) || /^(zkontroluj|domluv|ověř|udělej)/i.test(q),
+      "otázka se nesmí stát úkolem: " + q);
+  });
+});
+
+test("spontánní mluva — nejistota se pozná a nepředvybírá se naslepo", () => {
+  const { issues } = extractFixture();
+  assert.ok(issues.length >= 4 && issues.length <= 8,
+    "z 36 replik má vypadnout hrstka bodů, ne desítky (bylo " + issues.length + ")");
+  const sure = issues.filter((i) => (i.confidence || 0) >= 70).length;
+  assert.ok(sure < issues.length,
+    "u mluveného přepisu nesmí být všechno označené jako jisté");
+});
+
+test("shortenTitle — strhne úvodní vatu i konverzační ocásek", () => {
+  assert.equal(w.shortenTitle("No, protože vlastně musíš udělat tu událost, no", 95),
+    "Udělat událost");
+  assert.equal(w.shortenTitle("Tak takže prostě zkontroluj kadenci na lince, víš", 95),
+    "Zkontroluj kadenci na lince");
+});
+
+test("contentTokens — pozná větu bez předmětu", () => {
+  assert.ok(w.contentTokens("Domluvíme se uvidíme, co nám tam.").length < 3);
+  assert.ok(w.contentTokens("Do pátku zajistím uvolnění CAD dat pro variantu G3.").length >= 5);
+});

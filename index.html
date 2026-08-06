@@ -976,11 +976,18 @@ function splitSentences(text){
     .replace(/\b([A-Z])\.\s?([A-Z])\./g,m=>m.replace(/\./g,DTOK));
   return p.split(/(?<=[.!?…])\s+|\n+/).map(s=>s.split(DTOK).join(".").trim()).filter(s=>s.length>0);
 }
-const FIRST_PERSON=/(?:^|\P{L})(?:zajistím|zajistíme|připravím|připravíme|dodám|dodáme|pošlu|pošleme|zkontroluji|zkontrolujeme|udělám|uděláme|ověřím|ověříme|vyřeším|vyřešíme|objednám|objednáme|domluvím|domluvíme|napíšu|napíšeme|zavolám|zavoláme|uvolním|uvolníme|doplním|doplníme|nasdílím|nasdílíme|projdu|projdeme|eskaluji|eskalujeme|založím|založíme|aktualizuji|aktualizujeme)(?!\p{L})/iu;
+const FIRST_PERSON=/(?:^|\P{L})(?:musím|budu muset|zajistím|zajistíme|připravím|připravíme|dodám|dodáme|pošlu|pošleme|zkontroluji|zkontrolujeme|udělám|uděláme|ověřím|ověříme|vyřeším|vyřešíme|objednám|objednáme|domluvím|domluvíme|napíšu|napíšeme|zavolám|zavoláme|uvolním|uvolníme|doplním|doplníme|nasdílím|nasdílíme|projdu|projdeme|eskaluji|eskalujeme|založím|založíme|aktualizuji|aktualizujeme)(?!\p{L})/iu;
 const THIRD_PERSON=/(?:^|\P{L})(?:zajistí|zajistějí|připraví|dodá|dodají|pošle|pošlou|zkontroluje|zkontrolují|udělá|udělají|ověří|vyřeší|objedná|objednají|domluví|napíše|zavolá|uvolní|doplní|nasdílí|projde|eskaluje|založí|aktualizuje)(?!\p{L})/iu;
 const IMPERATIVE=/(?:^|\P{L})(?:zajisti|zajistěte|připrav|připravte|pošli|pošlete|dodej|dodejte|zkontroluj|zkontrolujte|ověř|ověřte|vyřeš|vyřešte|objednej|objednejte|domluv|domluvte|doplň|doplňte|nasdílej|nasdílejte|aktualizuj|aktualizujte|projdi|projděte)(?!\p{L})/iu;
-const WEAK_MODAL=/(?:^|\P{L})(musíme|musí|je třeba|je nutné|potřebujeme|potřebuje|mělo by|měli bychom|bylo by dobré|chtělo by|nezapomeň|nezapomeňte)/iu;
-const EXPLICIT=/(?:^|\P{L})(úkol|action item|actionitem|todo|to-do|akce:|task:|ai:|deadline|termín|zodpovídá|odpovědný|odpovídá za|owner|pilot:)/iu;
+/* Hranice slova na konci je nutná: bez ní „musí" chytalo i „musíš“ uvnitř
+   jiného tvaru a dělalo z konverzační věty úkol. */
+const WEAK_MODAL=/(?:^|\P{L})(musíme|musí|je třeba|je nutné|potřebujeme|potřebuje|mělo by|měli bychom|bylo by dobré|chtělo by|nezapomeň|nezapomeňte)(?!\p{L})/iu;
+/* „musíš / musíte / měl bys" je adresné zadání konkrétnímu člověku —
+   silou odpovídá rozkazu, ne neurčitému „mělo by se". */
+const SECOND_PERSON=/(?:^|\P{L})(musíš|musíte|měl bys|měla bys|měli byste|budeš muset|zařiď|zařiďte)(?!\p{L})/iu;
+/* Holé „deadline“ / „termín“ tu být NESMÍ — pouhá zmínka termínu není úkol
+   („v tomhle je ten deadline“). Zůstávají jen značky, které úkol opravdu uvozují. */
+const EXPLICIT=/(?:^|\P{L})(úkol|action item|actionitem|todo|to-do|akce:|task:|ai:|termín:|deadline:|zodpovídá|odpovědný|odpovídá za|owner|pilot:)(?!\p{L})/iu;
 const PROBLEM_RX=/(?:^|\P{L})(problém|otevřený bod|open point|hrozí|riziko|rizikem|zpoždění|zpožděn|nefunguje|selhal|selhala|nesedí|chybí|reklamace|neshoda|vada|zmetk|blocker|delay|nestíháme|nestíhá|komplikace|eskalace|scrap|nekvalita|prostoj)/iu;
 const DECISION_RX=/(?:^|\P{L})(rozhodli jsme|rozhodnuto|dohodli jsme|dohodnuto|schváleno|schválili jsme|bereme|jdeme do|shodli jsme|potvrzuje|potvrzeno|zamítnuto|zamítáme|odsouhlaseno)/iu;
 const RISK_RX=/(?:^|\P{L})(riziko|rizikem|hrozí|může nastat|obáváme|pokud se nepodaří|v ohrožení|ohroženo|nejistota)/iu;
@@ -1053,13 +1060,60 @@ function extractDue(text, base){
   m=t.match(/(?:za|do)\s+(\d{1,2})\s?(týdn|týdny|weeks?)/); if(m) return isoOf(new Date(ref.getTime()+ +m[1]*7*864e5));
   return "";
 }
-const FILLER=/^(tak|takže|no|jo|hele|prostě|vlastně|myslím že|já bych řekl že|asi|dobře|ok|takhle|jenom|ještě|a|ale)[\s,]+/iu;
+const FILLER=/^(tak|takže|no|jo|hele|prostě|vlastně|myslím že|já bych řekl že|asi|dobře|ok|takhle|jenom|ještě|a|ale|teda|fakt|jakoby|furt|hm|eh|a to|o to ne|proto právě|to se|co jsou|nebo|takže jo|tak jo|dobrý|super|promiň)[\s,]+/iu;
+/* Výplňová slova spontánní mluvy. Do detekce nezasahují — slouží k tomu,
+   aby se poznala věta BEZ OBSAHU a aby se vyčistil název. */
+const FILLER_WORDS=new Set(("vlastne proste nejak nejaky nejake no jo hele takhle teda furt fakt jakoby "+
+  "asi trosku trochu vis vid nevim myslim rikam eh ehm hm mm tady tamhle todle tohle tomhle tomhlecterku "+
+  "prece jenom jeste zase pak potom uz nakonec vubec docela spis kdyztak kdyby "+
+  "nam nas vam vas mne mi ti mu ji jim nim nich sebe sobe svuj svoje svym tim tomu toho "+
+  "ten ta to tu ty tak takze kdyz protoze ale nebo cos coz jako").split(" "));
+/** Obsahová slova věty — bez stopwords a výplní. Úkol bez předmětu není úkol. */
+function contentTokens(sent){
+  return stripDia(String(sent).toLowerCase())
+    .replace(/[^a-z0-9\s]/g," ").split(/\s+/)
+    .filter(w => w.length>=3 && !STOPWORDS.has(w) && !FILLER_WORDS.has(w));
+}
+/** Podíl výplňových slov — hodně „vlastně/prostě/nějak" = mluva, ne závazek. */
+function fillerRatio(sent){
+  const all=stripDia(String(sent).toLowerCase()).replace(/[^a-z0-9\s]/g," ")
+    .split(/\s+/).filter(Boolean);
+  if(!all.length) return 0;
+  return all.filter(w=>FILLER_WORDS.has(w)).length/all.length;
+}
+/** Otázka není závazek — „Myslíš?", „V kolik to máte?" */
+function isQuestion(sent){ return /\?\s*$/.test(String(sent).trim()); }
+
+/* Slovesa, od kterých má smysl začít název úkolu. */
+const TITLE_VERB=/(?:^|\P{L})(zajist|připrav|priprav|dodá|dodám|pošl|posl|zkontrol|ověř|over|vyřeš|vyres|objedn|domluv|doplň|dopln|nasdíl|nasdil|aktualiz|uvoln|eskal|projd|založ|zaloz|napiš|napis|napsal|vytvoř|vytvor|udělat|udelat|udělá|udela|zruš|zrus|předá|preda|připomen|pripomen|naplán|naplan|plánovat|planovat|zavolat|zavolá|zavolám)/iu;
+/* Konverzační ocásky na konci věty — do názvu nepatří. */
+const TAIL_FILLER=/[\s,]+(no|jo|víš|vis|viď|vid|že jo|ze jo|nějak|nejak|prostě|proste|vlastně|vlastne|teda|tady víš|tady vis|no ne|nebo tak)\s*[.!?]*$/iu;
 function shortenTitle(sent,maxLen){
-  let s=String(sent).trim().replace(/^[-–•*]\s*/,"").replace(FILLER,"").replace(/\s+/g," ");
-  if(s.length>maxLen){
-    const v=s.match(/(?:^|\P{L})(zajist|připrav|dodá|dodám|pošl|zkontrol|ověř|vyřeš|objedn|domluv|doplň|nasdíl|aktualiz|uvoln|eskal|projd|založ)/iu);
-    if(v && v.index>12){ const c=s.slice(v.index).replace(/^\P{L}+/u,""); if(c.length>15) s=c; }
+  let s=String(sent).trim().replace(/^[-–•*]\s*/,"").replace(/\s+/g," ");
+
+  // Úvodní vata se v mluvě řetězí („No, takže vlastně…") — strhávat opakovaně.
+  for(let k=0;k<6;k++){
+    const t=s.replace(FILLER,"");
+    if(t===s) break;
+    s=t;
   }
+  // Začni u slovesa akce, když je před ním jen omáčka.
+  const v=s.match(TITLE_VERB);
+  if(v && v.index>2){
+    const c=s.slice(v.index).replace(/^\P{L}+/u,"");
+    if(c.length>15) s=c;
+  }
+  // Výplňová slova uvnitř názvu jen ředí smysl.
+  s=s.split(/\s+/).filter(w=>!FILLER_WORDS.has(stripDia(w.toLowerCase()).replace(/[^a-z0-9]/g,"")))
+    .join(" ").replace(/\s+([,.;:])/g,"$1").replace(/\s+/g," ").trim();
+  // Konverzační ocásek na konci („…, no", „…, víš").
+  for(let k=0;k<4;k++){
+    const t=s.replace(TAIL_FILLER,"");
+    if(t===s) break;
+    s=t;
+  }
+  s=s.replace(/[\s,;:]+$/,"");
+
   if(s.length>maxLen){
     const c=s.lastIndexOf(" ",maxLen-1);
     s=s.slice(0,c>30?c:maxLen-1).replace(/[,;:]$/,"")+"…";
@@ -1100,10 +1154,18 @@ function extractIssues(blocks, meta){
     const speaker=(b.speaker && b.speaker!=="—")?b.speaker:"";
     splitSentences(b.text||"").forEach(sent=>{
       if(sent.length<10) return;
+      // Spontánní mluva: věta bez předmětu ani otázka není závazek.
+      // („Domluvíme se uvidíme, co nám tam." vypadá jako slib, ale nic neslibuje.)
+      const content=contentTokens(sent);
+      if(content.length<3) return;
+      if(isQuestion(sent) && !IMPERATIVE.test(sent)) return;
+      const fillerR=fillerRatio(sent);
+
       const isProblem=PROBLEM_RX.test(sent), isRisk=RISK_RX.test(sent), isDecision=DECISION_RX.test(sent);
       const negated=NEGATED.test(sent), conditional=CONDITIONAL.test(sent);
       const first=FIRST_PERSON.test(sent), third=THIRD_PERSON.test(sent);
-      const imper=IMPERATIVE.test(sent), weak=WEAK_MODAL.test(sent), explicit=EXPLICIT.test(sent);
+      const second=SECOND_PERSON.test(sent);
+      const imper=IMPERATIVE.test(sent)||second, weak=WEAK_MODAL.test(sent), explicit=EXPLICIT.test(sent);
       const due=extractDue(sent,date), gateM=sent.match(GATE_RX);
 
       let owner="", ownerConf=0;
@@ -1147,6 +1209,9 @@ function extractIssues(blocks, meta){
       if(conditional) conf-=25;
       if(sent.length>220) conf-=10;
       if(sent.split(/\s+/).length<4) conf-=15;
+      // Čím víc „vlastně/prostě/nějak", tím spíš jde o mluvu, ne o závazek.
+      if(fillerR>0.25) conf-=14; else if(fillerR>0.15) conf-=7;
+      if(content.length<4) conf-=10;              // málo obsahu = málo jistoty
       conf=Math.max(5,Math.min(97,conf));
       const problem=isProblem?"":(pendingProblem||"");
       issues.push(mkIssue({type:problem?"action":"task",sent,meta,date,speaker,owner,due,gate:gateM,
@@ -1709,6 +1774,24 @@ function apRender(){
     kpi("Jistých",sure,"ok","nad prahem "+REVIEW_THRESHOLD+" %")
   ].join("");
   document.getElementById("apSel").textContent="vybráno "+on+" z "+apCand.length;
+
+  /* Spontánní mluva z rozpoznávání řeči: pravidla poznají, ŽE se něco slíbilo,
+     ale ne KDO a DO KDY — to je v kontextu, ne ve větě. Tam patří Gemini. */
+  const mess = apBlocks.length
+    ? apBlocks.reduce((a,b)=>a+fillerRatio(b.text||""),0)/apBlocks.length : 0;
+  const thin = apCand.length && (withOwner/apCand.length < 0.5 || withDue/apCand.length < 0.3);
+  let warn = document.getElementById("apWarn");
+  if(!warn){
+    warn = document.createElement("div"); warn.id = "apWarn";
+    document.getElementById("apKpis").insertAdjacentElement("afterend", warn);
+  }
+  warn.innerHTML = (mess > 0.12 || thin)
+    ? '<div class="banner warn"><svg class="i"><use href="#i-alert"/></svg><span>'+
+      'Přepis je hodně mluvený'+(mess>0.12?" (výplňová slova "+Math.round(mess*100)+" %)":"")+
+      '. Pravidla poznají, že se něco slíbilo, ale u části bodů nedopočítají <b>kdo</b> a <b>do kdy</b> — '+
+      'to bývá v kontextu, ne ve větě. Projeď to přes Gemini, vrátí přesnější piloty i termíny.'+
+      '</span><button class="btn sm" onclick="apGemini()">✨ Zpracovat v Gemini</button></div>'
+    : "";
 
   const tb=document.querySelector("#apTable tbody");
   if(!apCand.length){

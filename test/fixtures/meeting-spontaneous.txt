@@ -1,0 +1,41 @@
+Petr NOVOTNY (08:23): Čau.
+Vy (08:23): Takže to projelo docela Asii. A teď už tu letí snad směr Praha nevím nebo jak je to ještě bylo překládat nebo Takže to by mělo dopadnout dneska. Je tam i tu domluvit operátory. na trénink Ještě něco tě napadá, že tam máš tam ještě něco na projektu B.
+Petr NOVOTNY (08:23): Za mě asi dneska nic a připomínám. Zítra nejsem a příští týden teda toho no. To bude divočina, ale máme pak ten meeting. Dneska ne no.
+Vy (08:23): Domluvíme se uvidíme, co nám tam. Co nám tam dá kapacita k dispozici nebo jak to vymyslíme, ale pokusme se to pro udělat prostě i s těma jinejma, no.
+Petr NOVOTNY (08:23): Pokud pomůžeš.
+Vy (08:23): To určitě, ale zkusíme pomůžu pomůžu kdyžtak nějak jo. Myslíš?
+Petr NOVOTNY (08:23): Lenka mluvil ze zkušeností zkusit to můžeme ale
+Vy (08:23): Ale přesně Já zkusím to můžeme někam bohužel nám jak včera jsem zmiňoval. Co říkal Hana, že jsme To že operátoři mají dovolené, tak středním době jak někoho nezajímá, jo?
+Petr NOVOTNY (08:23): Proč se teď na to tlačí na tu FRPR, tak už to najednou půl roku to nevadilo najednou je to.
+Vy (08:23): No, protože v tomhlectěrku je ten deadline, jak to tam je.
+Petr NOVOTNY (08:23): Tam se to hejbe každý tři měsíce.
+Vy (08:23): to je možný, ale to dodržet a Uvidíme, co se povede. Co ty Honzy něco máš něco?
+Jan CECH (08:23): Dneska máme mít na to předání těch dat.
+Vy (08:23): super Dneska máme toho ESD revizi. V kolik to máte Honzy, nevíš?
+Jan CECH (08:23): Do kalendáře. V kolik to tam je? Jo, máme to od 12. Do jedné jsem domluvenej.
+Vy (08:23): Ok Jo a tam od 12:00 do 12:30. Ale máme to tu revize těch hranů, to máš nějak připravený nebo ne Honzy scrapy a tady ty věci.
+Jan CECH (08:23): Jako připravený to nemám, ale podívám se na to teda nebo to nějak.
+Vy (08:23): Hele, jestli to máte takhle, tak to ne ještě já to já to tam ten tejden zruším. Já nevím jestli se tam dávám pravidelně. Ale to se domluv i s Lukášem Malým nebo s Tomášem, že by měla vlastně probíhat týdenní revize vlastně s krepu z těch výrobních hranů vždycky. Co jsou tak prostě tak se s tím domluv někam napiš, to já to smažu a dej tam normálně událost ty klidně Vytvoř na revizi vlastně hranu standardů.
+Jan CECH (08:23): Jako klidně to tam můžeme nechat tak na té pravidelné bázi. Každej týden tady ten meeting a teda na ten další týden, tak se tam připravím.
+Vy (08:23): Já se jenom podívám, jestli tam je opakovaný nebo pokud se je tam nechám takhle tajně na Dobrý tak jo, tak dneska střílel teda asi není. Pokud to tak nemusíš, protože pokud stejně ještě nebude mít od toho Lukáše, tak ty vstupy k tomu napadne má význam, spíš si říkám, kdyby. Zkušenost s Lukášem, jestli by mohl na tu půl dvanáctou, kdyby jsme rovnou v tom SSL vlastně ty dokumenty, který vlastně jsou tam potřeba, že by nám rovnou předal vlastně na tom meetingu, jestli mi rozumíš. Jo, zkus se tady si můžeme po těch 11:30. Pokud ne, tak to necháme a na příští revizi vlastně na ten tejden už byste dokumenty měl mít když ten k dispozici, tak bysme tam nějak společně do toho systému dali.
+Jan CECH (08:23): nes
+Vy (08:23): Dobrý. A ty máš Píšu dneska IVC, viď, když tě tam je. Co to je kamarád, viď? Promiň, to je OEM vlastně.
+Petr NOVOTNY (08:23): A on to má jako DMS to bude podle mě obojí.
+Vy (08:23): dobře
+Petr NOVOTNY (08:23): A to bude rychlý. V případě toho.
+Vy (08:23): jo
+Petr NOVOTNY (08:23): pokutu To co opakuju pokaždé a
+Vy (08:23): Já musím ještě tomu lůčku, je tam nějak na tom IVC připomenout, aby prostě nějak třeba napsal všem standard ohledně plánovaný FRPR, že prostě když je zapálil, když se má plánovat a že vlastně nabij ty pomaleji vlastně ty operátory nepouštěj na dovol, když je furt.
+Petr NOVOTNY (08:23): Tak my jsme toho neměli naplánovaný. To nebylo v tom fajlu, že jo?
+Vy (08:23): V jakém fajlu
+Petr NOVOTNY (08:23): No zaprvé to nebylo v tom X.
+Vy (08:23): Fest festiárku, to je že jo.
+Petr NOVOTNY (08:23): No to jo, tak s tím nepracuji, že jo a pít si ani výroba.
+Vy (08:23): O to ne, proto právě musíš ty vlastně udělat tu událost na základě toho termínu tady víš. Aby o tom věděli oni a říkám to není eh to není, že tě hejtuju, jo. Teda jenom jenom říkám. Jo ty máš přístup bude CR, víš, kdy mají být vlastně podle stíhár ty milníky a podle toho vlastně musíš plánovat i třeba to FRPR a to furt s nějakým předstihem, abych třeba ty lidi neměli do včiny, nebo když mají dovolenou tak aby byly zacvičeni třeba i další operátoři, který je můžou nahradit, no.
+Petr NOVOTNY (08:23): tak u nás na
+Jan CECH (08:23): Dneska máme mít na to předání těch dat.
+Jan CECH (08:23): Do kalendáře. V kolik to tam je? Jo, máme to od 12. Do jedné jsem domluvenej.
+Jan CECH (08:23): Jako připravený to nemám, ale podívám se na to teda nebo to nějak.
+Jan CECH (08:23): Jako klidně to tam můžeme nechat tak na té pravidelné bázi. Každej týden tady ten meeting a teda na ten další týden, tak se tam připravím.
+Jan CECH (08:23): nes
+Vy (08:23): Tak jo, tak já nevím, jestli ještě něco někdo co jsi ještě hezkou sušíme nebo ty.
